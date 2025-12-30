@@ -2,6 +2,7 @@ import Foundation
 import Photos
 import AppKit
 import Combine
+import CoreLocation
 
 // MARK: - Video Index Service
 
@@ -19,6 +20,11 @@ class VideoIndexService: ObservableObject {
     
     private let photosProvider = PhotosProvider()
     private let groqService = GroqService.shared
+    
+    // NEW: Embedding & Vector services
+    private let embeddingService = EmbeddingService.shared
+    private let vectorStore = VectorStore.shared
+    private let visionClassifier = VisionClassifier.shared
     
     // MARK: - Storage
     
@@ -201,6 +207,64 @@ class VideoIndexService: ObservableObject {
         
         // Sort by score descending
         return matches.sorted { $0.score > $1.score }
+    }
+    
+    // MARK: - Semantic Search (NEW)
+    
+    /// Search using embeddings for semantic similarity
+    /// Combines keyword matching with vector similarity for best results
+    func semanticSearch(query: String, topK: Int = 10) async -> [VideoSearchMatch] {
+        // Use hybrid search from vector store
+        let results = await vectorStore.hybridSearch(
+            query: query,
+            topK: topK,
+            keywordWeight: 0.3,
+            semanticWeight: 0.7
+        )
+        
+        // Convert to VideoSearchMatch format
+        return results.compactMap { result in
+            guard let entry = indexCache[result.id] else { return nil }
+            return VideoSearchMatch(
+                entry: entry,
+                score: Double(result.score),
+                matchReasons: ["semantic: \(String(format: "%.2f", result.score))"]
+            )
+        }
+    }
+    
+    /// Smart search that auto-selects best strategy
+    func smartSearch(query: String, topK: Int = 10) async -> [VideoSearchMatch] {
+        // Run both searches in parallel
+        async let keywordResults = search(query: query)
+        async let semanticResults = semanticSearch(query: query, topK: topK)
+        
+        let (keyword, semantic) = await (keywordResults, semanticResults)
+        
+        // Merge and deduplicate results
+        var scoreById: [String: (entry: VideoIndexEntry, score: Double, reasons: [String])] = [:]
+        
+        // Add keyword results
+        for match in keyword {
+            let existing = scoreById[match.entry.videoId]
+            let newScore = (existing?.score ?? 0) + match.score * 0.4
+            let reasons = (existing?.reasons ?? []) + match.matchReasons.map { "keyword: \($0)" }
+            scoreById[match.entry.videoId] = (match.entry, newScore, reasons)
+        }
+        
+        // Add semantic results
+        for match in semantic {
+            let existing = scoreById[match.entry.videoId]
+            let newScore = (existing?.score ?? 0) + match.score * 0.6
+            let reasons = (existing?.reasons ?? []) + match.matchReasons
+            scoreById[match.entry.videoId] = (match.entry, newScore, reasons)
+        }
+        
+        // Sort and return
+        return scoreById.values
+            .sorted { $0.score > $1.score }
+            .prefix(topK)
+            .map { VideoSearchMatch(entry: $0.entry, score: $0.score, matchReasons: $0.reasons) }
     }
 
     
@@ -394,6 +458,61 @@ class VideoIndexService: ObservableObject {
         }
 
         log("✅ Indexing complete. Total indexed: \(indexedCount)")
+        
+        // Save vector store to disk
+        await vectorStore.saveToDisk()
+        log("💾 Vector store saved")
+    }
+    
+    // MARK: - Rebuild Embeddings
+    
+    /// Regenerate embeddings for all indexed videos
+    /// Use this after upgrading embedding model
+    func rebuildAllEmbeddings() async {
+        log("🔄 Rebuilding embeddings for \(indexCache.count) videos...")
+        
+        var updated = 0
+        for (id, entry) in indexCache {
+            // Generate new embedding
+            if let embedding = await embeddingService.embedMediaMetadata(
+                description: entry.visual.description,
+                keywords: entry.visual.keywords,
+                transcript: entry.audio?.transcript,
+                people: entry.people
+            ) {
+                // Update cache
+                var updatedEntry = entry
+                updatedEntry.embedding = embedding
+                indexCache[id] = updatedEntry
+                
+                // Update vector store
+                await vectorStore.upsert(
+                    id: id,
+                    vector: embedding,
+                    metadata: VectorMetadata(
+                        description: entry.visual.description,
+                        keywords: entry.visual.keywords,
+                        transcript: entry.audio?.transcript,
+                        people: entry.people,
+                        mediaType: "video",
+                        duration: entry.source.duration,
+                        createdAt: entry.source.createdAt,
+                        location: nil
+                    )
+                )
+                
+                // Save to disk
+                do {
+                    try saveEntry(updatedEntry)
+                    updated += 1
+                } catch {
+                    log("❌ Failed to save updated entry: \(error)")
+                }
+            }
+        }
+        
+        await vectorStore.saveToDisk()
+        log("✅ Rebuilt embeddings for \(updated) videos")
     }
     
     // MARK: - Index Single Video
@@ -421,9 +540,26 @@ class VideoIndexService: ObservableObject {
         // Check cancellation before expensive AI operations
         if shouldCancelIndexing { throw CancellationError() }
 
-        // Run vision and audio analysis in parallel
+        // NEW: Run on-device vision analysis FIRST (free, fast ~50ms)
         progressUpdate(.analyzingVisual)
-
+        var onDeviceAnalysis: VisionAnalysisResult? = nil
+        if let firstThumb = thumbnails.first {
+            onDeviceAnalysis = await visionClassifier.analyze(image: firstThumb)
+            log("   On-device analysis: \(onDeviceAnalysis?.sceneLabels.prefix(3).map { $0.identifier } ?? [])")
+        }
+        
+        // Skip screen recordings and screenshots (detected by on-device analysis)
+        if let analysis = onDeviceAnalysis {
+            let isScreenContent = analysis.sceneLabels.contains { 
+                ["computer_screen", "monitor", "screenshot", "display"].contains($0.identifier)
+            }
+            if isScreenContent && analysis.faceCount == 0 {
+                log("   ⏭️ Skipping screen recording/screenshot")
+                throw IndexingError.skipped("Screen recording detected")
+            }
+        }
+        
+        // Run Claude vision and audio analysis in parallel
         async let visionResult = analyzeVisuals(thumbnails: thumbnails)
         async let audioResult = transcribeAudio(asset: asset, progressUpdate: progressUpdate)
 
@@ -431,10 +567,40 @@ class VideoIndexService: ObservableObject {
 
         // Check cancellation after AI operations
         if shouldCancelIndexing { throw CancellationError() }
+        
+        // Merge on-device keywords with Claude analysis
+        var finalVisual = visual ?? VideoVisualInfo(
+            description: "Could not analyze",
+            keywords: [],
+            thumbnails: thumbnailFilenames,
+            analyzedAt: Date(),
+            model: "unknown"
+        )
+        
+        // Add on-device scene labels as additional keywords
+        if let analysis = onDeviceAnalysis {
+            let onDeviceKeywords = analysis.keywords
+            let mergedKeywords = Array(Set(finalVisual.keywords + onDeviceKeywords))
+            finalVisual = VideoVisualInfo(
+                description: finalVisual.description,
+                keywords: mergedKeywords,
+                thumbnails: thumbnailFilenames,
+                analyzedAt: finalVisual.analyzedAt,
+                model: finalVisual.model
+            )
+        }
 
+        // NEW: Generate embedding for semantic search
+        let embedding = await embeddingService.embedMediaMetadata(
+            description: finalVisual.description,
+            keywords: finalVisual.keywords,
+            transcript: audio?.transcript,
+            people: people.isEmpty ? nil : people
+        )
+        
         // Build entry
-        let entry = VideoIndexEntry(
-            version: "1.0",
+        var entry = VideoIndexEntry(
+            version: "1.1",  // Bumped version for new fields
             videoId: videoId,
             userId: nil, // Will be set when syncing to AWS
             source: VideoSourceInfo(
@@ -443,20 +609,40 @@ class VideoIndexService: ObservableObject {
                 createdAt: asset.creationDate ?? Date(),
                 localPath: nil
             ),
-            visual: visual ?? VideoVisualInfo(
-                description: "Could not analyze",
-                keywords: [],
-                thumbnails: thumbnailFilenames,
-                analyzedAt: Date(),
-                model: "unknown"
-            ),
+            visual: finalVisual,
             audio: audio,
             people: people.isEmpty ? nil : people,
             indexed: IndexedInfo(
                 at: Date(),
                 appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
-            )
+            ),
+            embedding: embedding,
+            visionAnalysis: onDeviceAnalysis
         )
+        
+        // NEW: Store in vector store for semantic search
+        if let emb = embedding {
+            await vectorStore.upsert(
+                id: videoId,
+                vector: emb,
+                metadata: VectorMetadata(
+                    description: finalVisual.description,
+                    keywords: finalVisual.keywords,
+                    transcript: audio?.transcript,
+                    people: people.isEmpty ? nil : people,
+                    mediaType: "video",
+                    duration: asset.duration,
+                    createdAt: asset.creationDate,
+                    location: asset.location.map { loc in
+                        LocationInfo(
+                            latitude: loc.coordinate.latitude,
+                            longitude: loc.coordinate.longitude,
+                            placeName: nil
+                        )
+                    }
+                )
+            )
+        }
         
         return entry
     }
@@ -602,6 +788,136 @@ class VideoIndexService: ObservableObject {
         return nil
     }
     
+    // MARK: - Batch Visual Analysis (Claude)
+    
+    /// Analyze multiple videos in a single API call for efficiency
+    /// Groups up to 5 videos per request to reduce API overhead
+    private func batchAnalyzeVisuals(videoThumbnails: [(id: String, thumbnails: [NSImage])]) async -> [String: VideoVisualInfo] {
+        guard let apiKey = KeychainService.shared.getAPIKey(for: .anthropic) else {
+            log("No Anthropic API key for batch analysis")
+            return [:]
+        }
+        
+        var results: [String: VideoVisualInfo] = [:]
+        
+        // Process in batches of 5 videos
+        let batchSize = 5
+        for batchStart in stride(from: 0, to: videoThumbnails.count, by: batchSize) {
+            let batchEnd = min(batchStart + batchSize, videoThumbnails.count)
+            let batch = Array(videoThumbnails[batchStart..<batchEnd])
+            
+            // Build multi-video prompt
+            var imageContents: [[String: Any]] = []
+            var videoIds: [String] = []
+            
+            for (index, (id, thumbnails)) in batch.enumerated() {
+                videoIds.append(id)
+                
+                // Add header for this video
+                imageContents.append([
+                    "type": "text",
+                    "text": "=== VIDEO \(index + 1) (ID: \(id.prefix(8))) ==="
+                ])
+                
+                // Add 1-2 thumbnails per video in batch (save tokens)
+                for thumbnail in thumbnails.prefix(2) {
+                    guard let tiffData = thumbnail.tiffRepresentation,
+                          let bitmap = NSBitmapImageRep(data: tiffData),
+                          let jpegData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.7]) else {
+                        continue
+                    }
+                    
+                    imageContents.append([
+                        "type": "image",
+                        "source": [
+                            "type": "base64",
+                            "media_type": "image/jpeg",
+                            "data": jpegData.base64EncodedString()
+                        ]
+                    ])
+                }
+            }
+            
+            // Add batch analysis prompt
+            imageContents.append([
+                "type": "text",
+                "text": """
+                Analyze the \(batch.count) videos shown above. For EACH video, provide:
+                1. A brief description (1-2 sentences)
+                2. 5-8 searchable keywords
+                
+                Reply with a JSON array in order:
+                [
+                  {"description": "...", "keywords": ["...", "..."]},
+                  {"description": "...", "keywords": ["...", "..."]}
+                ]
+                """
+            ])
+            
+            var request = URLRequest(url: URL(string: "https://api.anthropic.com/v1/messages")!)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+            request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+            
+            let body: [String: Any] = [
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 800,
+                "messages": [[
+                    "role": "user",
+                    "content": imageContents
+                ]]
+            ]
+            
+            do {
+                request.httpBody = try JSONSerialization.data(withJSONObject: body)
+                let (data, response) = try await URLSession.shared.data(for: request)
+                
+                guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                    log("Batch vision API error")
+                    continue
+                }
+                
+                // Parse response
+                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let content = json["content"] as? [[String: Any]],
+                   let text = content.first?["text"] as? String {
+                    
+                    // Extract JSON array
+                    if let jsonStart = text.firstIndex(of: "["),
+                       let jsonEnd = text.lastIndex(of: "]") {
+                        let jsonStr = String(text[jsonStart...jsonEnd])
+                        if let jsonData = jsonStr.data(using: .utf8),
+                           let parsed = try? JSONSerialization.jsonObject(with: jsonData) as? [[String: Any]] {
+                            
+                            // Map results back to video IDs
+                            for (index, item) in parsed.enumerated() {
+                                guard index < videoIds.count else { break }
+                                
+                                let description = item["description"] as? String ?? ""
+                                let keywords = item["keywords"] as? [String] ?? []
+                                
+                                results[videoIds[index]] = VideoVisualInfo(
+                                    description: description,
+                                    keywords: keywords,
+                                    thumbnails: [],
+                                    analyzedAt: Date(),
+                                    model: "claude-haiku-4-5-batch"
+                                )
+                            }
+                            
+                            log("Batch analyzed \(parsed.count) videos successfully")
+                        }
+                    }
+                }
+            } catch {
+                log("Batch vision analysis error: \(error)")
+            }
+        }
+        
+        return results
+    }
+    
     // MARK: - Audio Transcription (Groq Whisper)
     
     private func transcribeAudio(asset: PHAsset, progressUpdate: @escaping (IndexingPhase) -> Void) async -> VideoAudioInfo? {
@@ -698,6 +1014,12 @@ struct VideoIndexEntry: Codable {
     let audio: VideoAudioInfo?
     let people: [String]? // People/faces tags from Photos app
     let indexed: IndexedInfo
+    
+    // NEW: Embedding for semantic search
+    var embedding: [Float]?
+    
+    // NEW: On-device vision analysis (free, fast)
+    var visionAnalysis: VisionAnalysisResult?
 }
 
 struct VideoSourceInfo: Codable {
@@ -756,4 +1078,21 @@ enum IndexingPhase: String {
     case extracting = "Extracting frames..."
     case analyzingVisual = "Analyzing visuals..."
     case transcribingAudio = "Transcribing audio..."
+    case generatingEmbedding = "Generating embedding..."
+}
+
+// MARK: - Indexing Error
+
+enum IndexingError: Error {
+    case skipped(String)
+    case analysisFailure(String)
+    case cancelled
+    
+    var localizedDescription: String {
+        switch self {
+        case .skipped(let reason): return "Skipped: \(reason)"
+        case .analysisFailure(let reason): return "Analysis failed: \(reason)"
+        case .cancelled: return "Indexing cancelled"
+        }
+    }
 }
