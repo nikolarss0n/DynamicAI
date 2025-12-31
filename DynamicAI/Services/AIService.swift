@@ -5,9 +5,19 @@ import CoreLocation
 import Photos
 import AppKit
 
+// MARK: - AI Provider Selection
+
+enum AIProvider: String {
+    case claude = "Claude (Anthropic)"
+    case groq = "Llama (Groq)"
+}
+
 // MARK: - AI Service Configuration
 
 struct AIConfig {
+    // Toggle this to switch providers
+    static var provider: AIProvider = .groq  // Changed to Groq for testing
+
     static let model = "claude-haiku-4-5-20251001"
     static let maxTokens = 500
     static let apiEndpoint = "https://api.anthropic.com/v1/messages"
@@ -50,6 +60,8 @@ struct AIConfig {
     - When user says "show me my photos", "latest photos", "my photos", "recent photos" → use search_photos with that exact query (no clarification needed)
     - When user says "index videos" or "index my videos" → use index_videos with action=start
     - When user asks about video index status → use index_videos with action=status
+    - When user says "index photos" or "index my photos" → use index_photos with action=start
+    - When user says "index my library" or "index media" → use both index_videos and index_photos with action=start
 
     Guidelines:
     - Answer general knowledge directly without tools
@@ -63,172 +75,12 @@ struct AIConfig {
 // MARK: - Tool Definitions
 
 enum AITool: String, CaseIterable {
-    case searchMovies = "search_movies"
-    case showMovieDetail = "show_movie_detail"
-    case searchCars = "search_cars"
-    case calendarQuery = "calendar_query"
-    case remindersQuery = "reminders_query"
     case contactsSearch = "contacts_search"
-    case launchApp = "launch_app"
-    case systemInfo = "system_info"
-    case setTimer = "set_timer"
-    case clipboard = "clipboard"
-    case darkMode = "dark_mode"
-    case volumeControl = "volume_control"
-    case webSearch = "web_search"
-    case searchPlaces = "search_places"
-    case getWeather = "get_weather"
-    case getBattery = "get_battery"
-    case controlMusic = "control_music"
-    case smartTrip = "smart_trip"
     case searchPhotos = "search_photos"
-    case indexVideos = "index_videos"
+    case manageIndex = "manage_index"
 
     var definition: [String: Any] {
         switch self {
-        case .searchMovies:
-            return [
-                "name": rawValue,
-                "description": "Search movies. Use type='search' with query for specific movies/franchises. Add filter to narrow by release status.",
-                "input_schema": [
-                    "type": "object",
-                    "properties": [
-                        "query": ["type": "string", "description": "Movie title, franchise or keyword (e.g., 'marvel', 'batman', 'star wars')"],
-                        "type": ["type": "string", "enum": ["search", "now_playing", "upcoming", "popular"], "description": "search=keyword search, others=browse lists"],
-                        "filter": ["type": "string", "enum": ["upcoming", "now_playing"], "description": "Optional: filter search results by release status"]
-                    ],
-                    "required": ["type"]
-                ]
-            ]
-        case .showMovieDetail:
-            return [
-                "name": rawValue,
-                "description": "Show detailed view for a movie with additional info.",
-                "input_schema": [
-                    "type": "object",
-                    "properties": [
-                        "movie_title": ["type": "string", "description": "Title of the movie"],
-                        "additional_info": ["type": "string", "description": "Additional information to display"]
-                    ],
-                    "required": ["movie_title", "additional_info"]
-                ]
-            ]
-        case .searchCars:
-            return [
-                "name": rawValue,
-                "description": "Search car information, specs, images",
-                "input_schema": [
-                    "type": "object",
-                    "properties": [
-                        "make": ["type": "string", "description": "Manufacturer (Toyota, BMW, etc)"],
-                        "model": ["type": "string", "description": "Model name"],
-                        "year": ["type": "integer", "description": "Model year"]
-                    ],
-                    "required": ["make"]
-                ]
-            ]
-        case .calendarQuery:
-            return [
-                "name": rawValue,
-                "description": "Query or manage calendar events",
-                "input_schema": [
-                    "type": "object",
-                    "properties": [
-                        "action": ["type": "string", "enum": ["list", "search", "today", "week"]],
-                        "query": ["type": "string", "description": "Search term for events"]
-                    ],
-                    "required": ["action"]
-                ]
-            ]
-        case .remindersQuery:
-            return [
-                "name": rawValue,
-                "description": "Query, create, or complete reminders",
-                "input_schema": [
-                    "type": "object",
-                    "properties": [
-                        "action": ["type": "string", "enum": ["list", "today", "overdue", "search", "lists", "create", "complete"], "description": "list=show reminders, today=due today, overdue=past due, search=find by text, lists=show all lists, create=new reminder, complete=mark done"],
-                        "list_name": ["type": "string", "description": "Filter by reminder list name (e.g., 'Shopping', 'Work')"],
-                        "query": ["type": "string", "description": "Search text or reminder title to create/complete"]
-                    ],
-                    "required": ["action"]
-                ]
-            ]
-        case .webSearch:
-            return [
-                "name": rawValue,
-                "description": "Search web for current information",
-                "input_schema": [
-                    "type": "object",
-                    "properties": [
-                        "query": ["type": "string", "description": "Search query"]
-                    ],
-                    "required": ["query"]
-                ]
-            ]
-        case .searchPlaces:
-            return [
-                "name": rawValue,
-                "description": "Search for restaurants, cafes, hotels, attractions, and other places in a specific location. Returns places with addresses, distances, and a map. Can show travel time from user's current location.",
-                "input_schema": [
-                    "type": "object",
-                    "properties": [
-                        "query": ["type": "string", "description": "What to search for (e.g., 'amazing restaurants', 'best cafes', 'hotels')"],
-                        "location": ["type": "string", "description": "City or area to search in (e.g., 'Sofia', 'Paris', 'Tokyo')"],
-                        "category": ["type": "string", "enum": ["restaurant", "cafe", "bar", "hotel", "attraction", "museum", "park", "shopping", "gym"], "description": "Optional category filter"],
-                        "from_current_location": ["type": "boolean", "description": "If true, show travel time from user's current location. Use when user asks 'how long to get there', 'from my location', 'from here', etc."]
-                    ],
-                    "required": ["query", "location"]
-                ]
-            ]
-        case .getWeather:
-            return [
-                "name": rawValue,
-                "description": "Get current weather and forecast for a location",
-                "input_schema": [
-                    "type": "object",
-                    "properties": [
-                        "location": ["type": "string", "description": "City name or location"]
-                    ],
-                    "required": ["location"]
-                ]
-            ]
-        case .getBattery:
-            return [
-                "name": rawValue,
-                "description": "Get battery status of Mac and connected devices",
-                "input_schema": [
-                    "type": "object",
-                    "properties": [:],
-                    "required": []
-                ]
-            ]
-        case .controlMusic:
-            return [
-                "name": rawValue,
-                "description": "Control Apple Music - play, pause, skip, or create playlists",
-                "input_schema": [
-                    "type": "object",
-                    "properties": [
-                        "action": ["type": "string", "enum": ["play", "pause", "next", "previous", "playlist"]],
-                        "query": ["type": "string", "description": "Song, artist, genre, or playlist name"]
-                    ],
-                    "required": ["action"]
-                ]
-            ]
-        case .smartTrip:
-            return [
-                "name": rawValue,
-                "description": "Smart trip assistant - checks weather, battery, calendar and provides suggestions",
-                "input_schema": [
-                    "type": "object",
-                    "properties": [
-                        "destination": ["type": "string", "description": "Where the user is going"],
-                        "departure_time": ["type": "string", "description": "When leaving (optional)"]
-                    ],
-                    "required": ["destination"]
-                ]
-            ]
         case .contactsSearch:
             return [
                 "name": rawValue,
@@ -241,103 +93,26 @@ enum AITool: String, CaseIterable {
                     "required": ["query"]
                 ]
             ]
-        case .launchApp:
-            return [
-                "name": rawValue,
-                "description": "Launch/open an application by name",
-                "input_schema": [
-                    "type": "object",
-                    "properties": [
-                        "name": ["type": "string", "description": "App name (e.g., 'Safari', 'Slack', 'VS Code')"],
-                        "action": ["type": "string", "enum": ["open", "list_running"], "description": "open=launch app, list_running=show running apps"]
-                    ],
-                    "required": ["name"]
-                ]
-            ]
-        case .systemInfo:
-            return [
-                "name": rawValue,
-                "description": "Get system information: CPU usage, memory, disk space, uptime",
-                "input_schema": [
-                    "type": "object",
-                    "properties": [:],
-                    "required": []
-                ]
-            ]
-        case .setTimer:
-            return [
-                "name": rawValue,
-                "description": "Set a timer that will show a notification when complete",
-                "input_schema": [
-                    "type": "object",
-                    "properties": [
-                        "minutes": ["type": "integer", "description": "Timer duration in minutes"],
-                        "label": ["type": "string", "description": "Optional label for the timer"]
-                    ],
-                    "required": ["minutes"]
-                ]
-            ]
-        case .clipboard:
-            return [
-                "name": rawValue,
-                "description": "Read or write clipboard contents",
-                "input_schema": [
-                    "type": "object",
-                    "properties": [
-                        "action": ["type": "string", "enum": ["read", "write"], "description": "read=get clipboard, write=set clipboard"],
-                        "text": ["type": "string", "description": "Text to copy (only for write action)"]
-                    ],
-                    "required": ["action"]
-                ]
-            ]
-        case .darkMode:
-            return [
-                "name": rawValue,
-                "description": "Check or change dark mode setting",
-                "input_schema": [
-                    "type": "object",
-                    "properties": [
-                        "action": ["type": "string", "enum": ["get", "toggle", "on", "off"], "description": "get=check status, toggle=switch, on/off=set explicitly"]
-                    ],
-                    "required": ["action"]
-                ]
-            ]
-        case .volumeControl:
-            return [
-                "name": rawValue,
-                "description": "Get or set system volume",
-                "input_schema": [
-                    "type": "object",
-                    "properties": [
-                        "action": ["type": "string", "enum": ["get", "set", "mute", "unmute"], "description": "Volume action"],
-                        "level": ["type": "integer", "description": "Volume level 0-100 (only for set action)"]
-                    ],
-                    "required": ["action"]
-                ]
-            ]
         case .searchPhotos:
             return [
                 "name": rawValue,
-                "description": "Search user's photo library using AI vision. Can find photos and videos by describing what's in them.",
+                "description": "Search photos and videos using natural language. Supports location ('photos from Greece'), time ('last summer'), visual content ('beach sunset'), and people ('photos with Sarah').",
                 "input_schema": [
                     "type": "object",
                     "properties": [
-                        "query": ["type": "string", "description": "What to search for (e.g., 'skipping rope', 'my cat', 'beach sunset', 'cooking')"],
-                        "media_type": ["type": "string", "enum": ["all", "photos", "videos"], "description": "Filter by media type"],
-                        "days_back": ["type": "integer", "description": "Optional: only search media from last N days"]
+                        "query": ["type": "string", "description": "Natural language search (e.g., 'beach photos from Greece last summer', 'videos of the wedding', 'sunset pictures')"]
                     ],
                     "required": ["query"]
                 ]
             ]
-        case .indexVideos:
+        case .manageIndex:
             return [
                 "name": rawValue,
-                "description": "Index videos for faster searching. Creates a searchable index with visual analysis and audio transcription. Use when user wants to index their videos or improve search quality.",
+                "description": "Manage photo/video search indexes. Build indexes for fast location and visual label search.",
                 "input_schema": [
                     "type": "object",
                     "properties": [
-                        "action": ["type": "string", "enum": ["start", "status", "clear"], "description": "start=begin indexing, status=check progress, clear=delete index"],
-                        "limit": ["type": "integer", "description": "Optional: max number of videos to index (for testing). Default indexes all."]
+                        "action": ["type": "string", "enum": ["start", "status", "clear"], "description": "start=build indexes, status=check index stats, clear=delete indexes"]
                     ],
                     "required": ["action"]
                 ]
@@ -425,16 +200,9 @@ class AIService: ObservableObject {
     @Published var lastError: String?
 
     // Services
-    private let movieProvider = MovieProvider()
-    private let calendarProvider = CalendarProvider()
-    private let remindersProvider = RemindersProvider()
     private let contactsProvider = ContactsProvider()
-    private let placeProvider = PlaceProvider()
     private let photosProvider = PhotosProvider()
-    private let batteryService = BatteryService.shared
-    private let musicService = MusicService.shared
     private let keychainService = KeychainService.shared
-    private let storeService = StoreService.shared
 
     private init() {
         // Migrate legacy keys on first launch
@@ -452,37 +220,183 @@ class AIService: ObservableObject {
         return ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"]
     }
 
-    private var weatherApiKey: String? {
-        keychainService.getAPIKey(for: .openWeather)
-    }
+    
 
     // MARK: - Main Query Method
 
     func query(_ message: String) async -> AIResponse {
-        // Check rate limits
-        if !storeService.canMakeQueries {
-            return .error("Daily limit reached. Upgrade to Pro for unlimited queries!")
-        }
-
-        guard let apiKey = apiKey, !apiKey.isEmpty else {
-            return .error("API key not set. Open Settings to add your API key.")
-        }
-
         isProcessing = true
         defer { isProcessing = false }
 
-        // Increment query count for free users
-        if !storeService.isPro && !storeService.hasByok {
-            storeService.incrementQueryCount()
+        // Route to appropriate provider
+        switch AIConfig.provider {
+        case .groq:
+            return await queryWithGroq(message)
+        case .claude:
+            guard let apiKey = apiKey, !apiKey.isEmpty else {
+                return .error("API key not set. Open Settings to add your API key.")
+            }
+            do {
+                let response = try await sendToClaudeWithTools(message: message, apiKey: apiKey)
+                return await processResponse(response)
+            } catch {
+                lastError = error.localizedDescription
+                return .error(error.localizedDescription)
+            }
         }
+    }
 
+    // MARK: - Groq Llama Query
+
+    private func queryWithGroq(_ message: String) async -> AIResponse {
         do {
-            let response = try await sendToClaudeWithTools(message: message, apiKey: apiKey)
-            return await processResponse(response)
+            // Check if this is a photo/video search query
+            if isPhotoSearchQuery(message) {
+                return await handlePhotoSearch(query: message)
+            }
+
+            // For other queries, use Groq chat
+            let systemPrompt = """
+            You are a helpful AI assistant in a macOS notch app. Be concise but helpful.
+            When the user asks about photos, videos, or images from their library, let them know you can search for them.
+            """
+
+            let response = try await GroqService.shared.chat(message: message, systemPrompt: systemPrompt)
+            return .text(response)
         } catch {
             lastError = error.localizedDescription
-            return .error(error.localizedDescription)
+            return .error("Groq error: \(error.localizedDescription)")
         }
+    }
+
+    private func isPhotoSearchQuery(_ message: String) -> Bool {
+        let lowered = message.lowercased()
+        let photoKeywords = ["photo", "photos", "picture", "pictures", "image", "images", "video", "videos", "miraggio", "from my library", "show me", "find my"]
+        return photoKeywords.contains { lowered.contains($0) }
+    }
+
+    private func handlePhotoSearch(query: String) async -> AIResponse {
+        print("[PhotoSearch] Using SmartPhotoSearch for: '\(query)'")
+
+        do {
+            // Use the new SmartPhotoSearch system
+            let response = try await SmartPhotoSearch.shared.search(query)
+
+            // Convert to PhotoSearchResults for UI
+            let assets = await SmartPhotoSearch.shared.fetchAssets(from: response)
+
+            if assets.isEmpty {
+                return .text("No photos found matching '\(query)'")
+            }
+
+            // Create PhotoSearchResults
+            let results = await withTaskGroup(of: PhotoSearchResult?.self) { group in
+                for asset in assets {
+                    group.addTask {
+                        let dateStr: String? = asset.creationDate.map { date in
+                            let formatter = DateFormatter()
+                            formatter.dateStyle = .medium
+                            formatter.timeStyle = .short
+                            return formatter.string(from: date)
+                        }
+                        return PhotoSearchResult(
+                            asset: asset,
+                            thumbnail: nil,
+                            info: PhotoAssetInfo(
+                                id: asset.localIdentifier,
+                                mediaType: asset.mediaType == .video ? "video" : "photo",
+                                creationDate: dateStr,
+                                duration: asset.mediaType == .video ? self.formatDuration(asset.duration) : nil,
+                                location: asset.location?.coordinate,
+                                isFavorite: asset.isFavorite
+                            ),
+                            confidence: "smart-search"
+                        )
+                    }
+                }
+
+                var results: [PhotoSearchResult] = []
+                for await result in group {
+                    if let r = result { results.append(r) }
+                }
+                return results
+            }
+
+            let toolResult = ToolResult(
+                id: UUID().uuidString,
+                name: "search_photos",
+                result: .photoResults(results, nil)
+            )
+
+            let summary = "Found \(results.count) photo(s) matching '\(query)'"
+            return .toolResults(summary, [toolResult])
+
+        } catch {
+            print("[PhotoSearch] SmartPhotoSearch error: \(error)")
+            return .error("Photo search failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func extractLimitFromQuery(_ query: String) -> Int? {
+        let patterns = [
+            "(\\d+)\\s*photos?",
+            "(\\d+)\\s*pictures?",
+            "(\\d+)\\s*videos?",
+            "(\\d+)\\s*images?",
+            "show\\s*me\\s*(\\d+)",
+            "find\\s*(\\d+)",
+            "top\\s*(\\d+)",
+            "last\\s*(\\d+)",
+            "latest\\s*(\\d+)"
+        ]
+
+        for pattern in patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+               let match = regex.firstMatch(in: query, range: NSRange(query.startIndex..., in: query)),
+               let range = Range(match.range(at: 1), in: query) {
+                return Int(query[range])
+            }
+        }
+        return nil
+    }
+
+    /// Use Llama to extract the actual search terms from natural language
+    private func extractSearchTermsWithLlama(_ query: String) async -> String {
+        let prompt = """
+        Extract the search keywords from this photo search query. Return ONLY the key search terms, nothing else.
+
+        Examples:
+        - "show me photos from Miraggio" → "Miraggio"
+        - "find pictures of the beach in Greece" → "beach Greece"
+        - "photos from my vacation in Paris last summer" → "Paris vacation"
+        - "show me 10 photos of Tesla cars" → "Tesla cars"
+        - "pictures with my dog at the park" → "dog park"
+
+        Query: "\(query)"
+
+        Search terms:
+        """
+
+        do {
+            let response = try await GroqService.shared.chat(message: prompt, systemPrompt: "You extract search keywords from queries. Reply with ONLY the keywords, no explanation.")
+            let cleaned = response.trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "\"", with: "")
+                .replacingOccurrences(of: "Search terms:", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            // If Llama returns something reasonable, use it; otherwise fall back to original
+            if !cleaned.isEmpty && cleaned.count < query.count * 2 {
+                return cleaned
+            }
+        } catch {
+            print("[PhotoSearch] Llama extraction failed: \(error.localizedDescription)")
+        }
+
+        // Fallback: extract location if found, otherwise use original query
+        if let location = extractLocationFromQuery(query) {
+            return location
+        }
+        return query
     }
 
     // MARK: - Claude API Call
@@ -559,600 +473,33 @@ class AIService: ObservableObject {
         }
 
         switch tool {
-        case .searchMovies:
-            let query = input["query"] as? String ?? ""
-            let type = input["type"] as? String ?? "search"
-            let filter = input["filter"] as? String
-            return await movieProvider.search(query: query, type: type, filter: filter)
-
-        case .showMovieDetail:
-            let movieTitle = input["movie_title"] as? String ?? ""
-            let additionalInfo = input["additional_info"] as? String ?? ""
-            return await showMovieDetail(title: movieTitle, info: additionalInfo)
-
-        case .searchCars:
-            let make = input["make"] as? String ?? ""
-            let model = input["model"] as? String
-            let year = input["year"] as? Int
-            return await searchCars(make: make, model: model, year: year)
-
-        case .calendarQuery:
-            let action = input["action"] as? String ?? "today"
-            let query = input["query"] as? String
-            return await calendarProvider.query(action: action, searchQuery: query)
-
-        case .remindersQuery:
-            let action = input["action"] as? String ?? "list"
-            let listName = input["list_name"] as? String
-            let query = input["query"] as? String
-            return await remindersProvider.query(action: action, listName: listName, query: query)
-
-        case .webSearch:
-            let query = input["query"] as? String ?? ""
-            return await webSearch(query: query)
-
-        case .searchPlaces:
-            let query = input["query"] as? String ?? ""
-            let location = input["location"] as? String
-            let categoryStr = input["category"] as? String
-            let category = categoryStr.flatMap { PlaceCategory(rawValue: $0) }
-            // Default to true - users generally want travel time from their location
-            let fromCurrentLocation = input["from_current_location"] as? Bool ?? true
-            let result = await placeProvider.searchPlaces(query: query, location: location, category: category, fromCurrentLocation: fromCurrentLocation)
-            if let error = result.error {
-                return .error(error)
-            }
-            return .places(result.places, result.mapSnapshot)
-
-        case .getWeather:
-            let location = input["location"] as? String ?? "Sofia"
-            return await getWeather(location: location)
-
-        case .getBattery:
-            return await getBatteryStatus()
-
-        case .controlMusic:
-            let action = input["action"] as? String ?? "play"
-            let query = input["query"] as? String
-            return await controlMusic(action: action, query: query)
-
-        case .smartTrip:
-            let destination = input["destination"] as? String ?? ""
-            let departureTime = input["departure_time"] as? String
-            return await smartTripAssistant(destination: destination, departureTime: departureTime)
-
         case .contactsSearch:
             let query = input["query"] as? String ?? ""
             return await contactsProvider.search(query: query)
 
-        case .launchApp:
-            let name = input["name"] as? String ?? ""
-            let action = input["action"] as? String ?? "open"
-            if action == "list_running" {
-                return await MainActor.run { SystemProvider.shared.listRunningApps() }
-            }
-            return await MainActor.run { SystemProvider.shared.launchApp(name: name) }
-
-        case .systemInfo:
-            return await MainActor.run { SystemProvider.shared.getSystemInfo() }
-
-        case .setTimer:
-            let minutes = input["minutes"] as? Int ?? 1
-            let label = input["label"] as? String
-            return await SystemProvider.shared.setTimer(minutes: minutes, label: label)
-
-        case .clipboard:
-            let action = input["action"] as? String ?? "read"
-            let text = input["text"] as? String
-            return await MainActor.run {
-                if action == "write", let text = text {
-                    return SystemProvider.shared.setClipboard(text: text)
-                }
-                return SystemProvider.shared.getClipboard()
-            }
-
-        case .darkMode:
-            let action = input["action"] as? String ?? "get"
-            return await MainActor.run {
-                switch action {
-                case "toggle": return SystemProvider.shared.toggleDarkMode()
-                case "on": return SystemProvider.shared.setDarkMode(enabled: true)
-                case "off": return SystemProvider.shared.setDarkMode(enabled: false)
-                default: return SystemProvider.shared.getDarkMode()
-                }
-            }
-
-        case .volumeControl:
-            let action = input["action"] as? String ?? "get"
-            let level = input["level"] as? Int
-            return await MainActor.run {
-                switch action {
-                case "set":
-                    return SystemProvider.shared.setVolume(level: level ?? 50)
-                case "mute":
-                    return SystemProvider.shared.toggleMute()
-                case "unmute":
-                    return SystemProvider.shared.toggleMute()
-                default:
-                    return SystemProvider.shared.getVolume()
-                }
-            }
-
         case .searchPhotos:
             let query = input["query"] as? String ?? ""
-            let mediaType = input["media_type"] as? String ?? "all"
-            let daysBack = input["days_back"] as? Int
-            return await searchPhotosWithVision(query: query, mediaType: mediaType, daysBack: daysBack)
+            return await executeSmartPhotoSearch(query: query)
 
-        case .indexVideos:
+        case .manageIndex:
             let action = input["action"] as? String ?? "status"
-            let limit = input["limit"] as? Int
-            return await handleVideoIndexing(action: action, limit: limit)
+            return await handleSmartIndexing(action: action)
         }
     }
 
-    // MARK: - Video Indexing
+    // MARK: - Smart Photo Search
 
-    private func handleVideoIndexing(action: String, limit: Int? = nil) async -> ToolExecutionResult {
-        let indexService = VideoIndexService.shared
-
-        switch action {
-        case "start":
-            if indexService.isIndexing {
-                return .text("Indexing is already in progress. Check the notch for progress.")
-            }
-
-            // Start indexing in background
-            Task {
-                await indexService.startIndexing(videos: nil, limit: limit) { progress in
-                    Task { @MainActor in
-                        ContentManager.shared.showIndexingProgress(progress)
-                    }
-                }
-                // Return to chat when done
-                await MainActor.run {
-                    ContentManager.shared.showChat()
-                }
-            }
-
-            let limitText = limit != nil ? " (limited to \(limit!) videos)" : ""
-            return .text("Started indexing videos\(limitText). Progress will show in the notch. This analyzes video frames with Claude and transcribes audio with Groq Whisper. You can continue using the app while indexing runs.")
-
-        case "clear":
-            indexService.clearIndex()
-            return .text("Video index cleared. You'll need to re-index to search videos by content.")
-
-        case "status":
-            let count = indexService.indexedCount
-            if indexService.isIndexing {
-                if let progress = indexService.indexingProgress {
-                    return .text("Indexing in progress: \(progress.current)/\(progress.total) videos. Phase: \(progress.phase.rawValue)")
-                }
-                return .text("Indexing in progress...")
-            } else if count > 0 {
-                return .text("\(count) videos indexed and ready for instant search.")
-            } else {
-                return .text("No videos indexed yet. Say 'index my videos' to start indexing for faster, smarter search with audio transcription.")
-            }
-
-        default:
-            return .text("Unknown action. Use: start, status, or clear.")
-        }
-    }
-
-    // MARK: - Movie Detail
-
-    private func showMovieDetail(title: String, info: String) async -> ToolExecutionResult {
-        let manager = ContentManager.shared
-
-        if let movie = manager.lastSelectedMovie, movie.title.lowercased().contains(title.lowercased()) {
-            return .movieDetail(movie, info)
-        }
-
-        if let movie = manager.lastMovieList.first(where: { $0.title.lowercased().contains(title.lowercased()) }) {
-            return .movieDetail(movie, info)
-        }
-
-        return .text(info)
-    }
-
-    // MARK: - Cars (Placeholder)
-
-    private func searchCars(make: String, model: String?, year: Int?) async -> ToolExecutionResult {
-        return .carResults([
-            CarInfo(make: make, model: model ?? "Various", year: year ?? 2024, imageURL: nil)
-        ])
-    }
-
-    // MARK: - Web Search (Placeholder)
-
-    private func webSearch(query: String) async -> ToolExecutionResult {
-        return .text("Web search for '\(query)' - Coming soon!")
-    }
-
-    // MARK: - Weather (Sandbox-compliant)
-
-    private func getWeather(location: String) async -> ToolExecutionResult {
-        guard let apiKey = weatherApiKey else {
-            return .error("Weather API key not configured. Add it in Settings.")
-        }
-
-        let encodedLocation = location.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? location
-        let urlString = "https://api.openweathermap.org/data/2.5/weather?q=\(encodedLocation)&appid=\(apiKey)&units=metric"
-
+    private func executeSmartPhotoSearch(query: String) async -> ToolExecutionResult {
         do {
-            guard let url = URL(string: urlString) else {
-                return .error("Invalid URL")
+            let response = try await SmartPhotoSearch.shared.search(query)
+            let assets = await SmartPhotoSearch.shared.fetchAssets(from: response)
+
+            if assets.isEmpty {
+                return .text("No photos found matching '\(query)'")
             }
 
-            let (data, _) = try await URLSession.shared.data(from: url)
-            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-
-            guard let main = json?["main"] as? [String: Any],
-                  let weather = (json?["weather"] as? [[String: Any]])?.first,
-                  let temp = main["temp"] as? Double,
-                  let humidity = main["humidity"] as? Int,
-                  let description = weather["description"] as? String,
-                  let iconCode = weather["icon"] as? String else {
-                return .error("Failed to parse weather data")
-            }
-
-            let feelsLike = main["feels_like"] as? Double ?? temp
-            let sfIcon = mapWeatherIcon(iconCode)
-
-            var suggestions: [String] = []
-            let isRaining = iconCode.contains("09") || iconCode.contains("10") || iconCode.contains("11")
-            let isSnowing = iconCode.contains("13")
-
-            if isRaining { suggestions.append("Bring an umbrella!") }
-            if isSnowing { suggestions.append("Dress warmly!") }
-            if temp < 10 { suggestions.append("Wear a jacket!") }
-            if temp > 30 { suggestions.append("Stay hydrated!") }
-
-            let weatherInfo = WeatherInfo(
-                location: location,
-                temperature: Int(temp),
-                feelsLike: Int(feelsLike),
-                condition: description,
-                icon: sfIcon,
-                humidity: humidity,
-                suggestions: suggestions
-            )
-
-            return .weather(weatherInfo)
-        } catch {
-            return .error("Weather fetch failed: \(error.localizedDescription)")
-        }
-    }
-
-    private func mapWeatherIcon(_ code: String) -> String {
-        switch code.prefix(2) {
-        case "01": return "sun.max.fill"
-        case "02": return "cloud.sun.fill"
-        case "03": return "cloud.fill"
-        case "04": return "smoke.fill"
-        case "09": return "cloud.drizzle.fill"
-        case "10": return "cloud.rain.fill"
-        case "11": return "cloud.bolt.fill"
-        case "13": return "snowflake"
-        case "50": return "cloud.fog.fill"
-        default: return "cloud.fill"
-        }
-    }
-
-    // MARK: - Battery (Sandbox-compliant - Uses BatteryService)
-
-    private func getBatteryStatus() async -> ToolExecutionResult {
-        let batteryInfo = batteryService.getBatteryInfo()
-        return .battery(batteryInfo)
-    }
-
-    // MARK: - Music Control (Sandbox-compliant - Uses MusicService)
-
-    private func controlMusic(action: String, query: String?) async -> ToolExecutionResult {
-        let result = await musicService.handleAction(action: action, query: query)
-        return .text(result)
-    }
-
-    // MARK: - Smart Trip Assistant
-
-    private func smartTripAssistant(destination: String, departureTime: String?) async -> ToolExecutionResult {
-        var suggestions: [String] = []
-
-        let routeInfo = await getRouteInfo(to: destination)
-
-        var weatherInfo: WeatherInfo? = nil
-        let weatherResult = await getWeather(location: destination)
-        if case .weather(let weather) = weatherResult {
-            weatherInfo = weather
-            suggestions.append(contentsOf: weather.suggestions)
-        }
-
-        let batteryInfo = batteryService.getBatteryInfo()
-
-        if batteryInfo.macPercent < 30 && !batteryInfo.macIsCharging {
-            suggestions.append("Mac at \(batteryInfo.macPercent)% - charge before leaving")
-        }
-        for device in batteryInfo.devices {
-            if device.percent < 30 {
-                suggestions.append("\(device.name) at \(device.percent)% - charge it!")
-            }
-        }
-
-        var calendarEvents: [CalendarDisplayItem] = []
-        let calendarResult = await calendarProvider.query(action: "today", searchQuery: nil)
-        if case .calendarEvents(let events) = calendarResult {
-            let formatter = DateFormatter()
-            formatter.timeStyle = .short
-            calendarEvents = events.prefix(3).map { event in
-                let timeStr = event.isAllDay ? "All day" : formatter.string(from: event.startDate)
-                return CalendarDisplayItem(
-                    id: event.id,
-                    title: event.title,
-                    time: timeStr,
-                    location: event.location,
-                    isAllDay: event.isAllDay,
-                    startDate: event.startDate
-                )
-            }
-        }
-
-        if suggestions.isEmpty {
-            suggestions.append("You're all set for your trip!")
-        }
-
-        let tripInfo = TripInfo(
-            destination: destination,
-            weather: weatherInfo,
-            battery: batteryInfo,
-            events: calendarEvents,
-            suggestions: suggestions,
-            route: routeInfo
-        )
-
-        return .trip(tripInfo)
-    }
-
-    // MARK: - Route Calculation
-
-    private func getRouteInfo(to destination: String) async -> RouteInfo? {
-        let geocoder = CLGeocoder()
-
-        do {
-            let placemarks = try await geocoder.geocodeAddressString(destination)
-            guard let destPlacemark = placemarks.first,
-                  let destLocation = destPlacemark.location else {
-                return nil
-            }
-
-            let destCoord = destLocation.coordinate
-            let sourceCoord = await getCurrentLocationCoordinate()
-
-            var distance: Double? = nil
-            var duration: Double? = nil
-            var polyline: MKPolyline? = nil
-
-            if let source = sourceCoord {
-                let routeData = await calculateRoute(from: source, to: destCoord)
-                distance = routeData?.distance
-                duration = routeData?.duration
-                polyline = routeData?.polyline
-            }
-
-            return RouteInfo(
-                destinationCoordinate: destCoord,
-                sourceCoordinate: sourceCoord,
-                distance: distance,
-                duration: duration,
-                routePolyline: polyline
-            )
-        } catch {
-            return nil
-        }
-    }
-
-    private func getCurrentLocationCoordinate() async -> CLLocationCoordinate2D? {
-        if let coord = await getIPBasedLocation() {
-            return coord
-        }
-        return nil
-    }
-
-    private func getIPBasedLocation() async -> CLLocationCoordinate2D? {
-        let apis = [
-            "https://ipapi.co/json/",
-            "https://ipwho.is/",
-            "https://freeipapi.com/api/json"
-        ]
-
-        for apiURL in apis {
-            guard let url = URL(string: apiURL) else { continue }
-
-            do {
-                let (data, _) = try await URLSession.shared.data(from: url)
-                if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                    let lat = json["latitude"] as? Double ?? json["lat"] as? Double
-                    let lon = json["longitude"] as? Double ?? json["lon"] as? Double
-
-                    if let lat = lat, let lon = lon {
-                        return CLLocationCoordinate2D(latitude: lat, longitude: lon)
-                    }
-                }
-            } catch {
-                continue
-            }
-        }
-
-        return nil
-    }
-
-    private func calculateRoute(from source: CLLocationCoordinate2D, to destination: CLLocationCoordinate2D) async -> (distance: Double, duration: Double, polyline: MKPolyline)? {
-        let sourcePlacemark = MKPlacemark(coordinate: source)
-        let destPlacemark = MKPlacemark(coordinate: destination)
-
-        let request = MKDirections.Request()
-        request.source = MKMapItem(placemark: sourcePlacemark)
-        request.destination = MKMapItem(placemark: destPlacemark)
-        request.transportType = .automobile
-
-        let directions = MKDirections(request: request)
-
-        do {
-            let response = try await directions.calculate()
-            if let route = response.routes.first {
-                return (route.distance, route.expectedTravelTime, route.polyline)
-            }
-        } catch {
-            // Route calculation failed
-        }
-        return nil
-    }
-
-    // MARK: - Photo/Video Search with Vision
-
-    private func searchPhotosWithVision(query: String, mediaType: String, daysBack: Int?) async -> ToolExecutionResult {
-        guard let apiKey = apiKey else {
-            return .error("API key not configured")
-        }
-
-        // FIRST: Check for simple "my photos" queries - handle before any vision/index search
-        let lowercaseQuery = query.lowercased()
-        let isMyPhotosQuery = lowercaseQuery.contains("my ") || 
-                              lowercaseQuery.contains(" me") ||
-                              lowercaseQuery.contains("of me") ||
-                              lowercaseQuery.hasPrefix("my") ||
-                              lowercaseQuery.hasSuffix(" me") ||
-                              lowercaseQuery == "all photos" ||
-                              lowercaseQuery == "latest" ||
-                              lowercaseQuery == "recent" ||
-                              lowercaseQuery.contains("latest photo") ||
-                              lowercaseQuery.contains("recent photo")
-        
-        let isSimpleMyPhotosQuery = isMyPhotosQuery && 
-            !lowercaseQuery.contains("where") && 
-            !lowercaseQuery.contains("with") &&
-            !lowercaseQuery.contains("at the") &&
-            !lowercaseQuery.contains("doing") &&
-            !lowercaseQuery.contains("playing")
-        
-        // Detect if query mentions photos explicitly
-        let queryMentionsPhotos = lowercaseQuery.contains("photo") || lowercaseQuery.contains("picture")
-        let limitFromQuery = extractNumberFromQuery(query) ?? 10
-        
-        print("[PhotoSearch] Query: '\(query)', isMyPhotosQuery: \(isMyPhotosQuery), isSimple: \(isSimpleMyPhotosQuery), queryMentionsPhotos: \(queryMentionsPhotos)")
-        
-        // Handle simple "my photos" queries FIRST - before video index
-        if isSimpleMyPhotosQuery && queryMentionsPhotos {
-            print("[PhotoSearch] Using person-based filtering for 'my photos' query")
-            let assets = await photosProvider.fetchMyPhotos(limit: limitFromQuery, mediaType: .image)
-            print("[PhotoSearch] fetchMyPhotos returned \(assets.count) assets")
-            
-            if !assets.isEmpty {
-                let results = await withTaskGroup(of: PhotoSearchResult?.self) { group in
-                    for asset in assets.prefix(limitFromQuery) {
-                        group.addTask {
-                            let dateStr: String? = asset.creationDate.map { date in
-                                let formatter = DateFormatter()
-                                formatter.dateStyle = .medium
-                                formatter.timeStyle = .short
-                                return formatter.string(from: date)
-                            }
-                            return PhotoSearchResult(
-                                asset: asset,
-                                thumbnail: nil,
-                                info: PhotoAssetInfo(
-                                    id: asset.localIdentifier,
-                                    mediaType: "photo",
-                                    creationDate: dateStr,
-                                    duration: nil,
-                                    location: asset.location?.coordinate,
-                                    isFavorite: asset.isFavorite
-                                ),
-                                confidence: "person-match"
-                            )
-                        }
-                    }
-                    
-                    var results: [PhotoSearchResult] = []
-                    for await result in group {
-                        if let r = result { results.append(r) }
-                    }
-                    return results
-                }
-                
-                print("[PhotoSearch] Returning \(results.count) person-matched photos")
-                return .photoResults(results, nil)
-            }
-        }
-
-        // For videos, try the index first (instant search!)
-        if mediaType == "videos" || mediaType == "all" {
-            let indexService = await VideoIndexService.shared
-            let indexMatches = await indexService.search(query: query)
-            
-            if !indexMatches.isEmpty {
-                print("[PhotoSearch] Found \(indexMatches.count) matches in index!")
-                
-                // Convert index matches to PhotoSearchResult
-                let results = await withTaskGroup(of: PhotoSearchResult?.self) { group in
-                    for match in indexMatches.prefix(10) {
-                        group.addTask {
-                            // Get the PHAsset from the index entry
-                            let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [match.entry.videoId], options: nil)
-                            guard let asset = fetchResult.firstObject else { return nil }
-                            
-                            return PhotoSearchResult(
-                                asset: asset,
-                                thumbnail: nil,
-                                info: PhotoAssetInfo(
-                                    id: match.entry.videoId,
-                                    mediaType: "video",
-                                    creationDate: nil,
-                                    duration: self.formatDuration(match.entry.source.duration),
-                                    location: nil,
-                                    isFavorite: false
-                                ),
-                                confidence: "indexed"
-                            )
-                        }
-                    }
-                    
-                    var results: [PhotoSearchResult] = []
-                    for await result in group {
-                        if let r = result { results.append(r) }
-                    }
-                    return results
-                }
-                
-                if !results.isEmpty {
-                    return .photoResults(results, nil)
-                }
-            }
-        }
-
-        var assets: [PHAsset] = []
-        
-        // Regular path - fetch assets for vision search
-        switch mediaType {
-        case "videos":
-            assets = await photosProvider.fetchVideos(limit: 200, daysBack: daysBack)
-        case "photos":
-            assets = await photosProvider.fetchPhotos(limit: 200, daysBack: daysBack)
-        default: // "all"
-            async let videos = photosProvider.fetchVideos(limit: 100, daysBack: daysBack)
-            async let photos = photosProvider.fetchPhotos(limit: 100, daysBack: daysBack)
-            assets = await videos + photos
-        }
-
-        guard !assets.isEmpty else {
-            return .text("No \(mediaType == "all" ? "photos or videos" : mediaType) found in your library.")
-        }
-        
-        // Legacy check - remove the duplicate early return block
-        if false {
-            // Direct return for simple "show my photos" queries
             let results = await withTaskGroup(of: PhotoSearchResult?.self) { group in
-                for asset in assets.prefix(limitFromQuery) {
+                for asset in assets {
                     group.addTask {
                         let dateStr: String? = asset.creationDate.map { date in
                             let formatter = DateFormatter()
@@ -1171,430 +518,408 @@ class AIService: ObservableObject {
                                 location: asset.location?.coordinate,
                                 isFavorite: asset.isFavorite
                             ),
-                            confidence: "person-match"
+                            confidence: "smart-search"
                         )
                     }
                 }
-                
+
                 var results: [PhotoSearchResult] = []
                 for await result in group {
                     if let r = result { results.append(r) }
                 }
                 return results
             }
-            
-            if !results.isEmpty {
-                return .photoResults(results, nil)
-            }
-        }
 
-        let isVideoSearch = mediaType == "videos" || (mediaType == "all" && assets.first?.mediaType == .video)
-
-        if isVideoSearch {
-            // Use BATCH approach - send 5 thumbnails per API call in PARALLEL
-            return await searchVideosInBatches(query: query, assets: assets, apiKey: apiKey)
-        } else {
-            // Use contact sheet for photos (they work better in grids)
-            return await searchPhotosWithContactSheet(query: query, assets: assets, apiKey: apiKey)
+            return .photoResults(results, nil)
+        } catch {
+            return .error("Photo search failed: \(error.localizedDescription)")
         }
     }
 
-    // MARK: - Batch Video Search (mini contact sheets in parallel)
+    // MARK: - Smart Indexing
 
-    private func searchVideosInBatches(query: String, assets: [PHAsset], apiKey: String) async -> ToolExecutionResult {
-        let videoAssets = assets.filter { $0.mediaType == .video }
-        let videosToSearch = Array(videoAssets.prefix(60))  // Search first 60 videos
-
-        print("[PhotoSearch] Creating mini contact sheets for \(videosToSearch.count) videos...")
-
-        // Split into 10 batches of 6 videos each (3x2 grid with larger thumbnails)
-        let batchSize = 6
-        var batches: [(videos: [PHAsset], startIndex: Int)] = []
-
-        for i in stride(from: 0, to: videosToSearch.count, by: batchSize) {
-            let end = min(i + batchSize, videosToSearch.count)
-            let batch = Array(videosToSearch[i..<end])
-            batches.append((videos: batch, startIndex: i))
-        }
-
-        print("[PhotoSearch] Sending \(batches.count) mini contact sheets in parallel...")
-
-        // Send all batches in PARALLEL
-        var allMatches: [(index: Int, asset: PHAsset)] = []
-
-        await withTaskGroup(of: [(Int, PHAsset)].self) { group in
-            for (batchIndex, batch) in batches.enumerated() {
-                group.addTask {
-                    await self.searchMiniContactSheet(
-                        videos: batch.videos,
-                        startIndex: batch.startIndex,
-                        batchIndex: batchIndex,
-                        query: query,
-                        apiKey: apiKey
+    private func handleSmartIndexing(action: String) async -> ToolExecutionResult {
+        switch action {
+        case "start":
+            // Start building indexes in background
+            Task {
+                _ = await SmartPhotoSearch.shared.buildIndexes { phase, current, total in
+                    let progress = IndexingProgress(
+                        current: current,
+                        total: total,
+                        phase: .analyzing
                     )
+                    Task { @MainActor in
+                        ContentManager.shared.showIndexingProgress(progress)
+                    }
+                }
+                await MainActor.run {
+                    ContentManager.shared.showChat()
                 }
             }
+            return .text("Started building indexes. GeoHash index (~3 seconds) + Label index (~50ms per photo). Progress shows in the notch.")
 
-            for await matches in group {
-                allMatches.append(contentsOf: matches)
+        case "clear":
+            await GeoHashIndex.shared.clear()
+            await LabelIndex.shared.clear()
+            return .text("Indexes cleared. Rebuild with 'index my photos'.")
+
+        case "status":
+            let geoStats = await GeoHashIndex.shared.stats
+            let labelStats = await LabelIndex.shared.stats
+
+            if geoStats.photosIndexed == 0 && labelStats.photosIndexed == 0 {
+                return .text("No indexes built yet. Say 'index my photos' to build fast location and label indexes.")
+            }
+
+            return .text("Indexes ready: \(geoStats.photosIndexed) photos with geo data, \(labelStats.photosIndexed) photos with labels. \(geoStats.uniqueCells) unique geohash locations, \(labelStats.uniqueLabels) unique labels.")
+
+        default:
+            return .text("Unknown action. Use: start, status, or clear.")
+        }
+    }
+
+    /// Parse time period expressions like "last summer", "2023", "winter 2022"
+    private func parseDateRange(from timePeriod: String) -> (start: Date, end: Date)? {
+        let lowercased = timePeriod.lowercased().trimmingCharacters(in: .whitespaces)
+        let calendar = Calendar.current
+        let now = Date()
+        let currentYear = calendar.component(.year, from: now)
+        
+        // Extract year if present (e.g., "summer 2023", "2022")
+        let yearPattern = try? NSRegularExpression(pattern: "\\b(20\\d{2})\\b")
+        let yearMatch = yearPattern?.firstMatch(in: lowercased, range: NSRange(lowercased.startIndex..., in: lowercased))
+        let specifiedYear: Int? = yearMatch.flatMap {
+            Range($0.range(at: 1), in: lowercased).map { Int(lowercased[$0])! }
+        }
+        
+        // Determine if "last" is present
+        let isLast = lowercased.contains("last")
+        
+        // Season definitions (month ranges)
+        let seasons: [(name: String, startMonth: Int, endMonth: Int)] = [
+            ("winter", 12, 2),   // Dec-Feb
+            ("spring", 3, 5),    // Mar-May
+            ("summer", 6, 8),    // Jun-Aug
+            ("fall", 9, 11),     // Sep-Nov
+            ("autumn", 9, 11)    // Sep-Nov (alias)
+        ]
+        
+        // Check for seasons
+        for season in seasons {
+            if lowercased.contains(season.name) {
+                var year = specifiedYear ?? currentYear
+                
+                // "last summer" means previous occurrence
+                if isLast && specifiedYear == nil {
+                    let currentMonth = calendar.component(.month, from: now)
+                    // If we're past this season, use current year; otherwise use last year
+                    if currentMonth > season.endMonth || (season.name == "winter" && currentMonth > 2) {
+                        // Season already passed this year
+                    } else {
+                        year -= 1
+                    }
+                }
+                
+                // Handle winter spanning two years
+                let startYear = (season.name == "winter") ? year - 1 : year
+                let endYear = (season.name == "winter") ? year : year
+                
+                let startComponents = DateComponents(year: startYear, month: season.startMonth, day: 1)
+                let endComponents = DateComponents(year: endYear, month: season.endMonth + 1, day: 1)
+                
+                if let start = calendar.date(from: startComponents),
+                   let end = calendar.date(from: endComponents) {
+                    print("[DateParse] '\(timePeriod)' → \(start) to \(end)")
+                    return (start, end)
+                }
             }
         }
-
-        print("[PhotoSearch] Found \(allMatches.count) total matches")
-
-        if allMatches.isEmpty {
-            return .text("No videos found matching '\(query)'")
+        
+        // Check for just a year like "2023"
+        if let year = specifiedYear, lowercased.trimmingCharacters(in: .decimalDigits).isEmpty || 
+           lowercased == "\(year)" || lowercased.contains("in \(year)") {
+            let startComponents = DateComponents(year: year, month: 1, day: 1)
+            let endComponents = DateComponents(year: year + 1, month: 1, day: 1)
+            if let start = calendar.date(from: startComponents),
+               let end = calendar.date(from: endComponents) {
+                print("[DateParse] '\(timePeriod)' → full year \(year)")
+                return (start, end)
+            }
         }
-
-        // Convert to PhotoSearchResult - sort by index first
-        let sortedMatches = allMatches.sorted { $0.index < $1.index }
-
-        let results = sortedMatches.map { match -> PhotoSearchResult in
-            PhotoSearchResult(
-                asset: match.asset,
-                thumbnail: nil,
-                info: PhotoAssetInfo(
-                    id: match.asset.localIdentifier,
-                    mediaType: "video",
-                    creationDate: nil,
-                    duration: formatDuration(match.asset.duration),
-                    location: match.asset.location?.coordinate,
-                    isFavorite: match.asset.isFavorite
-                ),
-                confidence: "high"
-            )
+        
+        // "last year"
+        if lowercased.contains("last year") {
+            let lastYear = currentYear - 1
+            let startComponents = DateComponents(year: lastYear, month: 1, day: 1)
+            let endComponents = DateComponents(year: currentYear, month: 1, day: 1)
+            if let start = calendar.date(from: startComponents),
+               let end = calendar.date(from: endComponents) {
+                return (start, end)
+            }
         }
-
-        // Create a simple preview image
-        let previewImage = NSImage(size: NSSize(width: 200, height: 150))
-
-        return .photoResults(results, previewImage)
+        
+        // "last month"
+        if lowercased.contains("last month") {
+            if let start = calendar.date(byAdding: .month, value: -1, to: now),
+               let startOfLastMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: start)),
+               let endOfLastMonth = calendar.date(byAdding: .month, value: 1, to: startOfLastMonth) {
+                return (startOfLastMonth, endOfLastMonth)
+            }
+        }
+        
+        print("[DateParse] Could not parse '\(timePeriod)'")
+        return nil
     }
     
-    /// Interprets user search query to extract intent and context
-    private func interpretSearchQuery(_ query: String) -> String {
+    /// Extract time period from query (e.g., "last summer", "2023", "winter 2022")
+    private func extractTimePeriodFromQuery(_ query: String) -> String? {
         let lowercased = query.lowercased()
-        var interpretations: [String] = []
         
-        // Detect first-person references (user is the subject)
-        let firstPersonIndicators = ["i ", "i'm ", "me ", "my ", "myself"]
-        let isFirstPerson = firstPersonIndicators.contains { lowercased.contains($0) } ||
-                           lowercased.hasPrefix("i ")
-        
-        if isFirstPerson {
-            interpretations.append("• User is asking about THEMSELVES (adult) doing this activity")
-            interpretations.append("• EXCLUDE: children, other people doing the activity")
-        }
-        
-        // Detect specific activities that need exact matching
-        let specificActivities = [
-            "jump rope": "person actively using a jump rope, rope visible, jumping motion",
-            "jumping rope": "person actively using a jump rope, rope visible, jumping motion",
-            "skipping rope": "person actively using a jump rope/skip rope",
-            "workout": "exercise activity, fitness setting or athletic movement",
-            "exercise": "intentional physical training, not casual movement",
-            "running": "jogging/running motion, athletic activity",
-            "cooking": "food preparation, kitchen setting, cooking utensils",
-            "swimming": "in water, swimming motion",
-            "dancing": "rhythmic body movement to music or choreography",
-            "playing guitar": "hands on guitar, instrument visible",
-            "playing piano": "hands on piano keys, instrument visible"
+        // Check for seasons with optional year
+        let seasonPatterns = [
+            "(last\\s+)?(summer|winter|spring|fall|autumn)(\\s+\\d{4})?",
+            "(summer|winter|spring|fall|autumn)\\s+(\\d{4})",
+            "last\\s+year",
+            "last\\s+month",
+            "\\b(20\\d{2})\\b"  // Just a year like 2023
         ]
         
-        for (activity, description) in specificActivities {
-            if lowercased.contains(activity) {
-                interpretations.append("• SPECIFIC MATCH REQUIRED: \(description)")
-                interpretations.append("• EXCLUDE: similar but different activities")
-                break
+        for pattern in seasonPatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+               let match = regex.firstMatch(in: lowercased, range: NSRange(lowercased.startIndex..., in: lowercased)),
+               let range = Range(match.range, in: lowercased) {
+                let period = String(lowercased[range]).trimmingCharacters(in: .whitespaces)
+                print("[TimePeriodExtract] Found time period in query: '\(period)'")
+                return period
             }
         }
         
-        // Detect exclusion hints
-        if lowercased.contains("not ") || lowercased.contains("without ") || lowercased.contains("exclude ") {
-            interpretations.append("• User specified exclusions - respect them strictly")
-        }
-        
-        // Detect location/setting requirements
-        let locations = ["beach", "gym", "home", "outside", "indoor", "outdoor", "park", "kitchen", "office"]
-        for location in locations {
-            if lowercased.contains(location) {
-                interpretations.append("• Setting must include: \(location)")
-            }
-        }
-        
-        if interpretations.isEmpty {
-            return "• General search - match videos showing: \(query)"
-        }
-        
-        return interpretations.joined(separator: "\n")
+        return nil
     }
-
-    private func searchMiniContactSheet(
-        videos: [PHAsset],
-        startIndex: Int,
-        batchIndex: Int,
-        query: String,
-        apiKey: String
-    ) async -> [(Int, PHAsset)] {
-
-        // Create mini contact sheet (6 videos in 3x2 grid at 400x300 = 1200x600)
-        guard let result = await photosProvider.createVideoGrid(
-            videos: videos,
-            thumbnailSize: CGSize(width: 400, height: 300),
-            columns: 3
-        ) else {
-            print("[Batch \(batchIndex)] Failed to create contact sheet")
-            return []
-        }
-
-        // Convert to JPEG base64
-        guard let tiffData = result.image.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiffData),
-              let jpegData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
-            return []
-        }
-
-        let base64Image = jpegData.base64EncodedString()
-        print("[Batch \(batchIndex)] Contact sheet: \(jpegData.count / 1024) KB, \(videos.count) videos")
-
-        // Parse user intent from query
-        let interpretedQuery = interpretSearchQuery(query)
+    
+    /// Extract location from query (e.g., "photos from Greece" → "Greece", "Miraggion hotel" → "Miraggion hotel")
+    private func extractLocationFromQuery(_ query: String) -> String? {
+        let lowercased = query.lowercased()
         
-        let prompt = """
-        This is a grid of \(videos.count) video thumbnails (3 columns x 2 rows).
-        Videos numbered \(startIndex + 1) to \(startIndex + videos.count), left-to-right, top-to-bottom.
-        Row 1: \(startIndex + 1), \(startIndex + 2), \(startIndex + 3)
-        Row 2: \(startIndex + 4), \(startIndex + 5), \(startIndex + 6)
-
-        USER QUERY: "\(query)"
-        
-        INTERPRETATION:
-        \(interpretedQuery)
-
-        TASK: Find videos that SPECIFICALLY match the interpreted query above.
-        
-        BE STRICT:
-        - If query mentions "I" or "me" → look for an ADULT doing the activity, NOT children
-        - If query is about a specific activity → the person must be DOING that activity, not just present
-        - Exclude videos that only partially match (e.g., "jump rope" ≠ just "jumping" or "rope")
-        
-        Look carefully at EACH thumbnail: people (age, what they're doing), objects, activities, setting.
-
-        Reply with ONLY JSON:
-        {"matches": [\(startIndex + 1)], "reason": "brief description of why each matches"}
-
-        If none match the SPECIFIC query: {"matches": [], "reason": "none match - explain why"}
-        """
-
-        let body: [String: Any] = [
-            "model": "claude-haiku-4-5-20251001",
-            "max_tokens": 200,
-            "messages": [[
-                "role": "user",
-                "content": [
-                    ["type": "image", "source": ["type": "base64", "media_type": "image/jpeg", "data": base64Image]],
-                    ["type": "text", "text": prompt]
-                ]
-            ]]
+        // Pattern: "from <location>", "in <location>", "at <location>"
+        let patterns = [
+            "from ([a-zA-Z][a-zA-Z0-9 ]+)",
+            "in ([a-zA-Z][a-zA-Z0-9 ]+)",
+            "at ([a-zA-Z][a-zA-Z0-9 ]+)",
+            "near ([a-zA-Z][a-zA-Z0-9 ]+)"
         ]
-
-        var request = URLRequest(url: URL(string: AIConfig.apiEndpoint)!)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-
-        do {
-            request.httpBody = try JSONSerialization.data(withJSONObject: body)
-            let (data, _) = try await URLSession.shared.data(for: request)
-
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let contentArray = json["content"] as? [[String: Any]],
-               let firstContent = contentArray.first,
-               let text = firstContent["text"] as? String {
-
-                print("[Batch \(batchIndex)] Response: \(text)")
-
-                // Parse matches from response
-                if let jsonStart = text.firstIndex(of: "{"),
-                   let jsonEnd = text.lastIndex(of: "}") {
-                    let jsonStr = String(text[jsonStart...jsonEnd])
-                    if let jsonData = jsonStr.data(using: .utf8),
-                       let parsed = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-                       let matches = parsed["matches"] as? [Int] {
-
-                        // Convert video numbers to (index, asset) pairs
-                        return matches.compactMap { videoNum -> (Int, PHAsset)? in
-                            let localIndex = videoNum - startIndex - 1  // Convert to 0-based local index
-                            guard localIndex >= 0 && localIndex < videos.count else { return nil }
-                            let globalIndex = startIndex + localIndex
-                            return (globalIndex, videos[localIndex])
+        
+        for pattern in patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+               let match = regex.firstMatch(in: query, range: NSRange(query.startIndex..., in: query)),
+               let range = Range(match.range(at: 1), in: query) {
+                let location = String(query[range]).trimmingCharacters(in: .whitespaces)
+                // Filter out common non-location words
+                let nonLocations = ["me", "my", "the", "a", "an", "photos", "pictures", "videos", "last", "this"]
+                if !nonLocations.contains(location.lowercased()) && location.count > 2 {
+                    print("[LocationExtract] Found location in query: '\(location)'")
+                    return location
+                }
+            }
+        }
+        
+        // Check if query contains place indicators and extract the place name
+        let placeIndicators = ["hotel", "restaurant", "beach", "airport", "museum", "park", "station", "resort", "spa", "cafe", "bar", "club"]
+        for indicator in placeIndicators {
+            if lowercased.contains(indicator) {
+                // Try to extract just the place name, e.g., "Miraggio hotel" from "photos from Miraggio hotel"
+                // Pattern: look for word(s) before or including the indicator
+                let patterns = [
+                    // "miraggio hotel", "the miraggio", "hotel miraggio"
+                    "([a-zA-Z]+(?:\\s+[a-zA-Z]+)?\\s+\(indicator))",
+                    "(\(indicator)\\s+[a-zA-Z]+(?:\\s+[a-zA-Z]+)?)",
+                    // Just the indicator with preceding word
+                    "([a-zA-Z]+\\s+\(indicator))"
+                ]
+                
+                for pattern in patterns {
+                    if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+                       let match = regex.firstMatch(in: query, range: NSRange(query.startIndex..., in: query)),
+                       let range = Range(match.range(at: 1), in: query) {
+                        let placeName = String(query[range]).trimmingCharacters(in: .whitespaces)
+                        if placeName.count > indicator.count + 1 { // More than just the indicator
+                            print("[LocationExtract] Extracted place name: '\(placeName)' from query")
+                            return placeName
                         }
                     }
                 }
+                
+                // Fallback: use the indicator and surrounding context
+                print("[LocationExtract] Query contains place indicator '\(indicator)', using semantic search")
+                return query
             }
-        } catch {
-            print("[Batch \(batchIndex)] Error: \(error)")
         }
-
-        return []
+        
+        return nil
     }
-
-    // MARK: - Photo Contact Sheet Search (original approach for photos)
-
-    private func searchPhotosWithContactSheet(query: String, assets: [PHAsset], apiKey: String) async -> ToolExecutionResult {
-        let photoAssets = assets.filter { $0.mediaType == .image }
-
-        guard let result = await photosProvider.createPhotoContactSheet(
-            photos: Array(photoAssets.prefix(40)),
-            thumbnailSize: CGSize(width: 120, height: 120),
-            columns: 8,
-            maxPhotos: 40
-        ) else {
-            return .error("Failed to create contact sheet")
-        }
-
-        let contactSheetImage = result.image
-        let assetMap = result.assetMap
-
-        guard let tiffData = contactSheetImage.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiffData),
-              let jpegData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.7]) else {
-            return .error("Failed to encode contact sheet")
-        }
-
-        let base64Image = jpegData.base64EncodedString()
-
-        let visionPrompt = """
-        Analyze this contact sheet of photos. Each photo is numbered (top-left corner).
-
-        TASK: Find photos showing "\(query)"
-
-        Reply with ONLY JSON:
-        {"matches": [1, 5], "confidence": "high", "description": "Photo 1 shows X"}
-
-        If nothing matches: {"matches": [], "confidence": "high", "description": "No photos match"}
-        """
-
+    
+    /// Geocode a location string to coordinates, with AI fallback for unknown places
+    private func geocodeLocation(_ location: String) async -> CLLocationCoordinate2D? {
+        let geocoder = CLGeocoder()
+        
+        // First try direct geocoding
         do {
-            let visionResponse = try await sendVisionRequest(
-                prompt: visionPrompt,
-                imageBase64: base64Image,
-                apiKey: apiKey
-            )
-
-            let matchingResults = parseVisionResponse(visionResponse, assetMap: assetMap, isVideo: false)
-
-            if matchingResults.isEmpty {
-                return .text("No photos found matching '\(query)'")
+            let placemarks = try await geocoder.geocodeAddressString(location)
+            if let coordinate = placemarks.first?.location?.coordinate {
+                print("[Geocode] '\(location)' → \(coordinate.latitude), \(coordinate.longitude)")
+                return coordinate
             }
-
-            return .photoResults(matchingResults, nil)  // Don't show contact sheet in results
         } catch {
-            return .error("Vision search failed: \(error.localizedDescription)")
+            print("[Geocode] Direct geocode failed for '\(location)', trying AI resolution...")
         }
+        
+        // Fallback: Ask AI to resolve the location to a known place
+        if let resolvedLocation = await resolveLocationWithAI(location) {
+            print("[Geocode] AI resolved '\(location)' → '\(resolvedLocation)'")
+            do {
+                let placemarks = try await geocoder.geocodeAddressString(resolvedLocation)
+                if let coordinate = placemarks.first?.location?.coordinate {
+                    print("[Geocode] '\(resolvedLocation)' → \(coordinate.latitude), \(coordinate.longitude)")
+                    return coordinate
+                }
+            } catch {
+                print("[Geocode] Failed to geocode resolved location '\(resolvedLocation)': \(error)")
+            }
+        }
+        
+        return nil
     }
-
-    private func sendVisionRequest(prompt: String, imageBase64: String, apiKey: String) async throws -> String {
-        var request = URLRequest(url: URL(string: AIConfig.apiEndpoint)!)
+    
+    /// Use AI to resolve an unknown location name to a known geographic location
+    private func resolveLocationWithAI(_ location: String) async -> String? {
+        guard let apiKey = apiKey else { return nil }
+        
+        let prompt = """
+        What is the geographic location (city, region, or country) of "\(location)"?
+        Reply with ONLY the location name that can be geocoded (e.g., "Corfu, Greece" or "Paris, France").
+        If you don't know, reply with "UNKNOWN".
+        """
+        
+        let requestBody: [String: Any] = [
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": 50,
+            "messages": [["role": "user", "content": prompt]]
+        ]
+        
+        guard let url = URL(string: "https://api.anthropic.com/v1/messages"),
+              let httpBody = try? JSONSerialization.data(withJSONObject: requestBody) else {
+            return nil
+        }
+        
+        var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-
-        let body: [String: Any] = [
-            "model": "claude-sonnet-4-20250514",  // Better vision than Haiku
-            "max_tokens": 500,
-            "messages": [
-                [
-                    "role": "user",
-                    "content": [
-                        [
-                            "type": "image",
-                            "source": [
-                                "type": "base64",
-                                "media_type": "image/jpeg",
-                                "data": imageBase64
-                            ]
-                        ],
-                        [
-                            "type": "text",
-                            "text": prompt
-                        ]
-                    ]
-                ]
-            ]
-        ]
-
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"
-            throw AIError.apiError((response as? HTTPURLResponse)?.statusCode ?? 0, errorBody)
+        request.httpBody = httpBody
+        request.timeoutInterval = 10
+        
+        do {
+            let (data, _) = try await URLSession.shared.data(for: request)
+            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let content = json["content"] as? [[String: Any]],
+               let text = content.first?["text"] as? String {
+                let resolved = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if resolved != "UNKNOWN" && !resolved.isEmpty && resolved.count < 100 {
+                    return resolved
+                }
+            }
+        } catch {
+            print("[Geocode] AI resolution failed: \(error)")
         }
-
-        // Parse response to get text content
-        if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let content = json["content"] as? [[String: Any]],
-           let firstBlock = content.first,
-           let text = firstBlock["text"] as? String {
-            return text
-        }
-
-        throw AIError.invalidResponse
+        
+        return nil
     }
-
-    private func parseVisionResponse(_ response: String, assetMap: [Int: PHAsset], isVideo: Bool) -> [PhotoSearchResult] {
-        var results: [PhotoSearchResult] = []
-
-        // Try to parse JSON response
-        guard let jsonStart = response.firstIndex(of: "{"),
-              let jsonEnd = response.lastIndex(of: "}") else {
-            return results
+    
+    /// Use AI to resolve a location name directly to GPS coordinates
+    /// This uses Groq/Llama to get approximate coordinates for places that don't geocode
+    private func resolveLocationWithAI(locationName: String) async -> CLLocationCoordinate2D? {
+        let prompt = """
+        What are the approximate GPS coordinates (latitude, longitude) of "\(locationName)"?
+        Reply with ONLY two numbers separated by a comma, like: 39.926, 23.706
+        If you don't know or it's not a real place, reply with: UNKNOWN
+        """
+        
+        do {
+            let response = try await GroqService.shared.chat(
+                message: prompt, 
+                systemPrompt: "You are a geography expert. Provide GPS coordinates for locations."
+            )
+            
+            let text = response.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+            
+            // Parse "39.926, 23.706" format
+            if text != "UNKNOWN" && !text.contains("UNKNOWN") {
+                let parts = text.components(separatedBy: ",").map { $0.trimmingCharacters(in: CharacterSet.whitespaces) }
+                if parts.count >= 2,
+                   let lat = Double(parts[0].filter { $0.isNumber || $0 == "." || $0 == "-" }),
+                   let lon = Double(parts[1].filter { $0.isNumber || $0 == "." || $0 == "-" }),
+                   lat >= -90 && lat <= 90,
+                   lon >= -180 && lon <= 180 {
+                    return CLLocationCoordinate2D(latitude: lat, longitude: lon)
+                }
+            }
+        } catch {
+            print("[Geocode] AI GPS resolution failed: \(error)")
         }
-
-        let jsonString = String(response[jsonStart...jsonEnd])
-
-        guard let jsonData = jsonString.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-              let matches = json["matches"] as? [Int] else {
-            return results
-        }
-
-        let confidence = json["confidence"] as? String
-
-        for matchIndex in matches {
-            // Contact sheet uses 1-based indexing for display, but assetMap uses 0-based for videos, 0-based for photos
-            let assetIndex = isVideo ? (matchIndex - 1) : (matchIndex - 1)
-
-            guard let asset = assetMap[assetIndex] else { continue }
-
-            let info = Task { await photosProvider.getAssetInfo(asset) }
-
-            results.append(PhotoSearchResult(
-                asset: asset,
-                thumbnail: nil, // Will be loaded lazily in UI
-                info: PhotoAssetInfo(
-                    id: asset.localIdentifier,
-                    mediaType: asset.mediaType == .video ? "video" : "photo",
-                    creationDate: nil,
-                    duration: asset.mediaType == .video ? formatDuration(asset.duration) : nil,
-                    location: asset.location?.coordinate,
-                    isFavorite: asset.isFavorite
-                ),
-                confidence: confidence
-            ))
-        }
-
-        return results
+        
+        return nil
     }
-
-    private nonisolated func formatDuration(_ seconds: TimeInterval) -> String {
-        let mins = Int(seconds) / 60
-        let secs = Int(seconds) % 60
-        return String(format: "%d:%02d", mins, secs)
+    
+    /// Reverse geocode coordinates to get place name
+    private func reverseGeocodeLocation(_ location: CLLocation) async -> String? {
+        let geocoder = CLGeocoder()
+        do {
+            let placemarks = try await geocoder.reverseGeocodeLocation(location)
+            if let placemark = placemarks.first {
+                // Build a searchable string from placemark components
+                let components = [
+                    placemark.name,
+                    placemark.locality,           // City
+                    placemark.subLocality,        // Neighborhood
+                    placemark.administrativeArea, // State/Province
+                    placemark.country
+                ].compactMap { $0 }
+                return components.joined(separator: " ")
+            }
+        } catch {
+            // Silently fail - reverse geocoding often has rate limits
+        }
+        return nil
+    }
+    
+    /// Check if a location string refers to a country (needs larger search radius)
+    private func isCountryLevelLocation(_ location: String) async -> Bool {
+        let geocoder = CLGeocoder()
+        do {
+            let placemarks = try await geocoder.geocodeAddressString(location)
+            if let placemark = placemarks.first {
+                // If the location resolves to just a country (no city/locality), use larger radius
+                let hasCity = placemark.locality != nil || placemark.subLocality != nil
+                let hasSpecificPlace = placemark.name != nil && placemark.name != placemark.country
+                return !hasCity && !hasSpecificPlace
+            }
+        } catch {
+            // If geocoding fails, assume country-level for common country names
+            let commonCountries = ["greece", "italy", "france", "spain", "germany", "uk", "usa", 
+                                   "japan", "australia", "mexico", "brazil", "india", "china",
+                                   "portugal", "netherlands", "belgium", "austria", "switzerland"]
+            return commonCountries.contains(location.lowercased())
+        }
+        return false
+    }
+    
+    /// Check if a photo's location is near the target location (within ~100km)
+    private func isNearLocation(_ assetLocation: CLLocation, target: CLLocationCoordinate2D, radiusKm: Double = 100) -> Bool {
+        let targetLocation = CLLocation(latitude: target.latitude, longitude: target.longitude)
+        let distance = assetLocation.distance(from: targetLocation) / 1000 // Convert to km
+        return distance <= radiusKm
     }
     
     /// Extract a number from a query like "5 latest photos" -> 5
@@ -1615,6 +940,16 @@ class AIService: ObservableObject {
         }
         return nil
     }
+    
+    /// Format video duration from seconds to human-readable format
+    private nonisolated func formatDuration(_ seconds: Double) -> String {
+        let minutes = Int(seconds) / 60
+        let secs = Int(seconds) % 60
+        if minutes > 0 {
+            return "\(minutes)m \(secs)s"
+        }
+        return "\(secs)s"
+    }
 }
 
 // MARK: - Response Types
@@ -1632,20 +967,10 @@ struct ToolResult {
 }
 
 enum ToolExecutionResult {
-    case movies([MovieInfo])
-    case movieDetail(MovieDisplayItem, String)
-    case carResults([CarInfo])
-    case calendarEvents([CalendarEventInfo])
-    case reminders([ReminderInfo])
     case contacts([ContactInfo])
-    case systemInfo(SystemInfo)
-    case places([PlaceInfo], NSImage?)
     case photoResults([PhotoSearchResult], NSImage?) // Results with contact sheet preview
     case text(String)
     case error(String)
-    case battery(BatteryInfo)
-    case weather(WeatherInfo)
-    case trip(TripInfo)
 }
 
 // MARK: - Claude Response Models
@@ -1720,32 +1045,4 @@ enum AIError: LocalizedError {
     }
 }
 
-// MARK: - Info Models
 
-struct MovieInfo: Identifiable {
-    let id: Int
-    let title: String
-    let overview: String
-    let posterURL: URL?
-    let trailerURL: URL?
-    let releaseDate: String
-    let rating: Double
-}
-
-struct CarInfo: Identifiable {
-    let id = UUID()
-    let make: String
-    let model: String
-    let year: Int
-    let imageURL: URL?
-    var specs: [String: String] = [:]
-}
-
-struct CalendarEventInfo: Identifiable {
-    let id: String
-    let title: String
-    let startDate: Date
-    let endDate: Date
-    let location: String?
-    let isAllDay: Bool
-}

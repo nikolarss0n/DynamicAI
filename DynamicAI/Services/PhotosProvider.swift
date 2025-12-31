@@ -57,12 +57,20 @@ actor PhotosProvider {
 
     // MARK: - Fetch Photos
 
-    func fetchPhotos(limit: Int = 500, daysBack: Int? = nil, mediaType: PHAssetMediaType? = .image) async -> [PHAsset] {
+    /// Fetch photos from library
+    /// - Parameters:
+    ///   - limit: Maximum photos to fetch. Use 0 for unlimited (full library scan)
+    ///   - daysBack: Optional filter for photos within N days
+    ///   - mediaType: Filter by media type (.image, .video, or nil for all)
+    func fetchPhotos(limit: Int = 0, daysBack: Int? = nil, mediaType: PHAssetMediaType? = .image) async -> [PHAsset] {
         guard await requestAccess() else { return [] }
 
         let options = PHFetchOptions()
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-        options.fetchLimit = limit
+        if limit > 0 {
+            options.fetchLimit = limit
+        }
+        // limit = 0 means no fetchLimit (full library)
 
         // Build predicate based on mediaType and daysBack
         var predicates: [NSPredicate] = []
@@ -641,78 +649,101 @@ actor PhotosProvider {
     }
 
     // MARK: - People/Faces Tags
-
+    
+    /// Cache for main person to avoid repeated lookups
+    private var cachedMainPerson: String?
+    private var mainPersonCacheDate: Date?
+    
     /// Fetches People albums and builds a mapping of asset IDs to person names
+    /// Uses Apple's Photos People recognition (set up in Photos.app > People)
     func fetchPeopleMapping() async -> [String: [String]] {
-        guard await requestAccess() else { return [:] }
+        guard await requestAccess() else {
+            print("[PhotosProvider] ❌ No photo library access for people mapping")
+            return [:]
+        }
 
         var assetToPeople: [String: [String]] = [:]
+        var peopleFound: [String: Int] = [:] // Track people counts for logging
 
-        // Fetch the Faces smart folder (contains People albums)
-        let facesFolder = PHCollectionList.fetchCollectionLists(
+        // Method 1: Fetch the Faces smart folder (contains People albums)
+        let facesFolders = PHCollectionList.fetchCollectionLists(
             with: .smartFolder,
             subtype: .smartFolderFaces,
             options: nil
         )
+        
+        print("[PhotosProvider] 👥 Fetching People albums... (found \(facesFolders.count) face folders)")
 
-        // Iterate through each person's album
-        facesFolder.enumerateObjects { collectionList, _, _ in
-            // Each collectionList is a person - the title is their name
-            guard let personName = collectionList.localizedTitle, !personName.isEmpty else { return }
-
-            // Fetch albums within this person's folder
-            let albums = PHAssetCollection.fetchCollections(in: collectionList, options: nil)
-
-            albums.enumerateObjects { collection, _, _ in
-                guard let assetCollection = collection as? PHAssetCollection else { return }
-
-                // Fetch assets in this person's album
+        facesFolders.enumerateObjects { peopleFolder, folderIdx, _ in
+            print("[PhotosProvider]   📁 Folder[\(folderIdx)]: '\(peopleFolder.localizedTitle ?? "unnamed")'")
+            
+            // Get person collections from the People folder
+            let personCollections = PHAssetCollection.fetchCollections(in: peopleFolder, options: nil)
+            print("[PhotosProvider]      → \(personCollections.count) person collections inside")
+            
+            personCollections.enumerateObjects { collection, _, _ in
+                // Each person is an asset collection containing their photos
+                guard let assetCollection = collection as? PHAssetCollection,
+                      let personName = assetCollection.localizedTitle,
+                      !personName.isEmpty else { return }
+                
+                // Fetch photos for this person
                 let assets = PHAsset.fetchAssets(in: assetCollection, options: nil)
-
-                assets.enumerateObjects { asset, _, _ in
-                    let assetId = asset.localIdentifier
-                    if assetToPeople[assetId] == nil {
-                        assetToPeople[assetId] = []
-                    }
-                    if !assetToPeople[assetId]!.contains(personName) {
-                        assetToPeople[assetId]!.append(personName)
-                    }
-                }
-            }
-        }
-
-        // Also try fetching directly as asset collections (alternate structure)
-        let peopleAlbums = PHAssetCollection.fetchAssetCollections(
-            with: .smartAlbum,
-            subtype: .smartAlbumAllHidden, // Placeholder - iterate all to find faces
-            options: nil
-        )
-
-        // Try to get moments with faces
-        let allCollections = PHAssetCollection.fetchAssetCollections(
-            with: .smartAlbum,
-            subtype: .any,
-            options: nil
-        )
-
-        allCollections.enumerateObjects { collection, _, _ in
-            // Check if this might be a faces-related album
-            if let title = collection.localizedTitle,
-               collection.assetCollectionSubtype.rawValue >= 200 { // Faces subtypes are higher numbers
-                let assets = PHAsset.fetchAssets(in: collection, options: nil)
-                assets.enumerateObjects { asset, _, _ in
-                    let assetId = asset.localIdentifier
-                    if assetToPeople[assetId] == nil {
-                        assetToPeople[assetId] = []
-                    }
-                    if !assetToPeople[assetId]!.contains(title) {
-                        assetToPeople[assetId]!.append(title)
+                let photoCount = assets.count
+                
+                if photoCount > 0 {
+                    peopleFound[personName] = (peopleFound[personName] ?? 0) + photoCount
+                    
+                    assets.enumerateObjects { asset, _, _ in
+                        let assetId = asset.localIdentifier
+                        if assetToPeople[assetId] == nil {
+                            assetToPeople[assetId] = []
+                        }
+                        if !assetToPeople[assetId]!.contains(personName) {
+                            assetToPeople[assetId]!.append(personName)
+                        }
                     }
                 }
             }
         }
 
-        print("[PhotosProvider] Found \(assetToPeople.count) assets with people tags")
+        // Method 2: Also check Selfies album and tag as potential "me"
+        let selfies = PHAssetCollection.fetchAssetCollections(
+            with: .smartAlbum,
+            subtype: .smartAlbumSelfPortraits,
+            options: nil
+        )
+        
+        if let selfieAlbum = selfies.firstObject {
+            let selfieAssets = PHAsset.fetchAssets(in: selfieAlbum, options: nil)
+            print("[PhotosProvider] 🤳 Found \(selfieAssets.count) selfies (marking as potential 'me')")
+            
+            selfieAssets.enumerateObjects { asset, _, _ in
+                let assetId = asset.localIdentifier
+                if assetToPeople[assetId] == nil {
+                    assetToPeople[assetId] = []
+                }
+                // Add special marker for selfies if no person already tagged
+                if assetToPeople[assetId]!.isEmpty {
+                    assetToPeople[assetId]!.append("__selfie__")
+                }
+            }
+        }
+
+        // Log summary
+        if peopleFound.isEmpty {
+            print("[PhotosProvider] ⚠️ No People albums found! To enable 'photos of me' search:")
+            print("[PhotosProvider]    1. Open Photos.app")
+            print("[PhotosProvider]    2. Go to People & Pets album")
+            print("[PhotosProvider]    3. Identify yourself and others")
+        } else {
+            print("[PhotosProvider] ✅ Found \(peopleFound.count) people:")
+            for (name, count) in peopleFound.sorted(by: { $0.value > $1.value }).prefix(5) {
+                print("[PhotosProvider]    • \(name): \(count) photos")
+            }
+        }
+        
+        print("[PhotosProvider] 📊 Total: \(assetToPeople.count) assets with people/selfie tags")
         return assetToPeople
     }
 
@@ -853,10 +884,38 @@ actor PhotosProvider {
     }
     
     /// Get the "main" person (likely device owner) - person with most photos
+    /// Caches the result in UserDefaults for faster subsequent lookups
     func getMainPerson() async -> String? {
+        // Check cache first (valid for 1 hour)
+        let cacheKey = "PhotosProvider.mainPerson"
+        let cacheTimeKey = "PhotosProvider.mainPersonCacheTime"
+        
+        if let cached = UserDefaults.standard.string(forKey: cacheKey),
+           let cacheTime = UserDefaults.standard.object(forKey: cacheTimeKey) as? Date,
+           Date().timeIntervalSince(cacheTime) < 3600 { // 1 hour cache
+            print("[PhotosProvider] 👤 Using cached main person: '\(cached)'")
+            return cached
+        }
+        
+        // Fetch fresh data
         let people = await getAllPeople()
-        // Return the person with most photos (likely the device owner)
-        return people.first?.name
+        let mainPerson = people.first?.name
+        
+        // Cache the result
+        if let person = mainPerson {
+            UserDefaults.standard.set(person, forKey: cacheKey)
+            UserDefaults.standard.set(Date(), forKey: cacheTimeKey)
+            print("[PhotosProvider] 👤 Cached main person: '\(person)'")
+        }
+        
+        return mainPerson
+    }
+    
+    /// Clear the cached main person (call when user changes People albums)
+    func clearMainPersonCache() {
+        UserDefaults.standard.removeObject(forKey: "PhotosProvider.mainPerson")
+        UserDefaults.standard.removeObject(forKey: "PhotosProvider.mainPersonCacheTime")
+        print("[PhotosProvider] 🗑️ Cleared main person cache")
     }
     
     /// Fetch photos containing a specific person
@@ -911,27 +970,26 @@ actor PhotosProvider {
     }
     
     /// Fetch "my" photos - photos of the main person (device owner)
+    /// Uses Apple's Photos People recognition + Selfies album as fallback
     func fetchMyPhotos(limit: Int = 50, mediaType: PHAssetMediaType? = nil) async -> [PHAsset] {
-        // Run debug on first call to understand library structure
-        print("[PhotosProvider] 🔍 Starting fetchMyPhotos (limit: \(limit), mediaType: \(mediaType?.rawValue ?? -1))")
+        print("[PhotosProvider] 🔍 fetchMyPhotos (limit: \(limit))")
         
-        // First try person-based approach
+        var allMyPhotos: [PHAsset] = []
+        var seenIds = Set<String>()
+        
+        // Strategy 1: Get photos from People album (main person)
         let mainPerson = await getMainPerson()
         if let person = mainPerson {
-            print("[PhotosProvider] ✅ Main person identified: '\(person)'")
-            let photos = await fetchPhotosOfPerson(name: person, limit: limit, mediaType: mediaType)
-            if !photos.isEmpty {
-                print("[PhotosProvider] ✅ Found \(photos.count) photos of '\(person)'")
-                return photos
+            print("[PhotosProvider] 👤 Main person: '\(person)'")
+            let personPhotos = await fetchPhotosOfPerson(name: person, limit: limit, mediaType: mediaType)
+            for photo in personPhotos where !seenIds.contains(photo.localIdentifier) {
+                allMyPhotos.append(photo)
+                seenIds.insert(photo.localIdentifier)
             }
-            print("[PhotosProvider] ⚠️ No photos found for '\(person)', trying fallbacks...")
-        } else {
-            print("[PhotosProvider] ⚠️ No main person identified, running debug...")
-            await debugPhotosStructure()
+            print("[PhotosProvider]    → \(personPhotos.count) photos from People album")
         }
         
-        // Fallback 1: Selfies album
-        print("[PhotosProvider] Fallback 1: Trying Selfies album...")
+        // Strategy 2: Add Selfies (front camera = definitely me)
         let selfies = PHAssetCollection.fetchAssetCollections(
             with: .smartAlbum,
             subtype: .smartAlbumSelfPortraits,
@@ -945,23 +1003,36 @@ actor PhotosProvider {
                 fetchOptions.predicate = NSPredicate(format: "mediaType == %d", mediaType.rawValue)
             }
             
-            let assets = PHAsset.fetchAssets(in: selfieAlbum, options: fetchOptions)
-            var results: [PHAsset] = []
-            assets.enumerateObjects { asset, _, stop in
-                results.append(asset)
-                if results.count >= limit {
+            let selfieAssets = PHAsset.fetchAssets(in: selfieAlbum, options: fetchOptions)
+            var selfieCount = 0
+            selfieAssets.enumerateObjects { asset, _, stop in
+                if !seenIds.contains(asset.localIdentifier) {
+                    allMyPhotos.append(asset)
+                    seenIds.insert(asset.localIdentifier)
+                    selfieCount += 1
+                }
+                if allMyPhotos.count >= limit {
                     stop.pointee = true
                 }
             }
-            
-            if !results.isEmpty {
-                print("[PhotosProvider] ✅ Found \(results.count) selfies")
-                return results
-            }
+            print("[PhotosProvider]    → \(selfieCount) additional selfies")
         }
         
-        // Fallback 2: Favorites album
-        print("[PhotosProvider] Fallback 2: Trying Favorites album...")
+        // If we have enough photos, return them sorted by date
+        if !allMyPhotos.isEmpty {
+            let sorted = allMyPhotos.sorted { 
+                ($0.creationDate ?? .distantPast) > ($1.creationDate ?? .distantPast) 
+            }
+            print("[PhotosProvider] ✅ Returning \(min(sorted.count, limit)) 'me' photos")
+            return Array(sorted.prefix(limit))
+        }
+        
+        // Fallback: No People or Selfies found
+        print("[PhotosProvider] ⚠️ No 'me' photos found via People/Selfies")
+        print("[PhotosProvider]    💡 Tip: Open Photos.app → People & Pets → Identify yourself")
+        
+        // Last resort: Favorites album
+        print("[PhotosProvider] Fallback: Trying Favorites album...")
         let favorites = PHAssetCollection.fetchAssetCollections(
             with: .smartAlbum,
             subtype: .smartAlbumFavorites,

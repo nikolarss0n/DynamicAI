@@ -39,26 +39,43 @@ actor VisionClassifier {
     private init() {}
     
     // MARK: - Full Analysis
-    
+
     /// Perform comprehensive on-device analysis
     /// Returns scene labels, face count, detected text, and objects
     func analyze(image: NSImage) async -> VisionAnalysisResult {
         guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            log.warning(.vision, "Failed to convert NSImage to CGImage")
             return VisionAnalysisResult.empty
         }
-        
+
         return await analyze(cgImage: cgImage)
     }
-    
+
     func analyze(cgImage: CGImage) async -> VisionAnalysisResult {
+        let start = CFAbsoluteTimeGetCurrent()
+        log.info(.vision, "Starting on-device analysis", details: [
+            "width": cgImage.width,
+            "height": cgImage.height
+        ])
+
         // Run all analyses in parallel
         async let sceneLabels = classifyScene(cgImage: cgImage)
         async let faceInfo = detectFaces(cgImage: cgImage)
         async let textContent = recognizeText(cgImage: cgImage)
         async let saliency = computeSaliency(cgImage: cgImage)
-        
+
         let (labels, faces, text, salient) = await (sceneLabels, faceInfo, textContent, saliency)
-        
+
+        let elapsed = CFAbsoluteTimeGetCurrent() - start
+
+        log.success(.vision, "Analysis complete", details: [
+            "duration": String(format: "%.0fms", elapsed * 1000),
+            "scenes": labels.count,
+            "faces": faces.count,
+            "textLines": text.count,
+            "salientRegions": salient.count
+        ])
+
         return VisionAnalysisResult(
             sceneLabels: labels,
             faceCount: faces.count,
@@ -75,21 +92,29 @@ actor VisionClassifier {
     /// Returns top labels with confidence scores
     func classifyScene(cgImage: CGImage) async -> [SceneLabel] {
         let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-        
+
         do {
             try handler.perform([classifyRequest])
-            
+
             guard let results = classifyRequest.results else {
                 return []
             }
-            
+
             // Filter to high-confidence labels (>10%)
-            return results
+            let labels = results
                 .filter { $0.confidence > 0.1 }
                 .prefix(10)
                 .map { SceneLabel(identifier: $0.identifier, confidence: $0.confidence) }
+
+            if !labels.isEmpty {
+                log.debug(.vision, "Scene labels", details: [
+                    "top": labels.prefix(3).map { "\($0.identifier):\(String(format: "%.0f%%", $0.confidence * 100))" }.joined(separator: ", ")
+                ])
+            }
+
+            return labels
         } catch {
-            print("[VisionClassifier] Scene classification failed: \(error)")
+            log.error(.vision, "Scene classification failed", details: ["error": error.localizedDescription])
             return []
         }
     }
@@ -106,22 +131,28 @@ actor VisionClassifier {
     /// Returns bounding boxes and confidence scores
     func detectFaces(cgImage: CGImage) async -> [FaceInfo] {
         let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-        
+
         do {
             try handler.perform([faceRequest])
-            
+
             guard let results = faceRequest.results else {
                 return []
             }
-            
-            return results.map { face in
+
+            let faces = results.map { face in
                 FaceInfo(
                     boundingBox: face.boundingBox,
                     confidence: face.confidence
                 )
             }
+
+            if !faces.isEmpty {
+                log.debug(.vision, "Faces detected", details: ["count": faces.count])
+            }
+
+            return faces
         } catch {
-            print("[VisionClassifier] Face detection failed: \(error)")
+            log.error(.vision, "Face detection failed", details: ["error": error.localizedDescription])
             return []
         }
     }
@@ -138,41 +169,128 @@ actor VisionClassifier {
     /// Useful for screenshots, documents, signs
     func recognizeText(cgImage: CGImage) async -> [String] {
         let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-        
+
         do {
             try handler.perform([textRequest])
-            
+
             guard let results = textRequest.results else {
                 return []
             }
-            
-            return results.compactMap { observation in
+
+            let text = results.compactMap { observation in
                 observation.topCandidates(1).first?.string
             }
+
+            if !text.isEmpty {
+                log.debug(.vision, "Text recognized", details: [
+                    "lines": text.count,
+                    "preview": String(text.joined(separator: " ").prefix(50))
+                ])
+            }
+
+            return text
         } catch {
-            print("[VisionClassifier] Text recognition failed: \(error)")
+            log.error(.vision, "Text recognition failed", details: ["error": error.localizedDescription])
             return []
         }
     }
-    
+
     // MARK: - Saliency Detection
-    
+
     /// Find visually important regions in image
     func computeSaliency(cgImage: CGImage) async -> [CGRect] {
         let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-        
+
         do {
             try handler.perform([attentionRequest])
-            
+
             guard let results = attentionRequest.results,
                   let saliency = results.first else {
                 return []
             }
-            
+
             return saliency.salientObjects?.map { $0.boundingBox } ?? []
         } catch {
-            print("[VisionClassifier] Saliency detection failed: \(error)")
+            log.error(.vision, "Saliency detection failed", details: ["error": error.localizedDescription])
             return []
+        }
+    }
+    
+    // MARK: - Image Feature Print (Apple's Native Image Embedding)
+    
+    /// Generate Apple's native image feature print for similarity comparison
+    /// This is the same technology used by Photos app for visual search
+    /// Returns a normalized float array that can be used for vector similarity
+    func generateFeaturePrint(cgImage: CGImage) async -> [Float]? {
+        let request = VNGenerateImageFeaturePrintRequest()
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        
+        do {
+            try handler.perform([request])
+            
+            guard let result = request.results?.first else {
+                log.warning(.vision, "No feature print result")
+                return nil
+            }
+            
+            // Extract the feature print data
+            let elementCount = result.elementCount
+            var floatArray = [Float](repeating: 0, count: elementCount)
+            
+            // Copy data from the observation
+            try result.data.withUnsafeBytes { buffer in
+                guard let baseAddress = buffer.baseAddress else { return }
+                let floatBuffer = baseAddress.assumingMemoryBound(to: Float.self)
+                for i in 0..<elementCount {
+                    floatArray[i] = floatBuffer[i]
+                }
+            }
+            
+            log.debug(.vision, "Feature print generated", details: [
+                "dimensions": elementCount
+            ])
+            
+            return floatArray
+        } catch {
+            log.error(.vision, "Feature print generation failed", details: ["error": error.localizedDescription])
+            return nil
+        }
+    }
+    
+    /// Compare two images using their feature prints
+    /// Returns a similarity score between 0 (different) and 1 (identical)
+    func compareImages(image1: CGImage, image2: CGImage) async -> Float? {
+        let request1 = VNGenerateImageFeaturePrintRequest()
+        let request2 = VNGenerateImageFeaturePrintRequest()
+        
+        let handler1 = VNImageRequestHandler(cgImage: image1, options: [:])
+        let handler2 = VNImageRequestHandler(cgImage: image2, options: [:])
+        
+        do {
+            try handler1.perform([request1])
+            try handler2.perform([request2])
+            
+            guard let print1 = request1.results?.first,
+                  let print2 = request2.results?.first else {
+                return nil
+            }
+            
+            var distance: Float = 0
+            try print1.computeDistance(&distance, to: print2)
+            
+            // Convert distance to similarity (lower distance = higher similarity)
+            // Feature print distances typically range from 0 to ~100
+            let similarity = max(0, 1 - (distance / 50))
+            
+            log.debug(.vision, "Image comparison", details: [
+                "distance": String(format: "%.2f", distance),
+                "similarity": String(format: "%.2f", similarity)
+            ])
+            
+            return similarity
+        } catch {
+            log.error(.vision, "Image comparison failed", details: ["error": error.localizedDescription])
+            return nil
         }
     }
     

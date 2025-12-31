@@ -36,6 +36,29 @@ enum NotchContentType {
     case indexingProgress(IndexingProgress) // Video indexing progress
 }
 
+// MARK: - Indexing Progress Model
+
+enum IndexingPhase: String {
+    case preparing = "Preparing"
+    case analyzing = "Analyzing"
+    case analyzingVisual = "Visual Analysis"
+    case transcribing = "Transcribing"
+    case complete = "Complete"
+}
+
+struct IndexingProgress {
+    let current: Int
+    let total: Int
+    var currentVideoName: String?
+    var currentThumbnail: NSImage?
+    var phase: IndexingPhase = .analyzing
+
+    var progressPercent: Double {
+        guard total > 0 else { return 0 }
+        return Double(current) / Double(total)
+    }
+}
+
 // MARK: - System Info Models
 
 struct BatteryInfo {
@@ -540,6 +563,7 @@ struct ChatContentView: View {
     @StateObject private var manager = ContentManager.shared
     @State private var inputText = ""
     @State private var isLoading = false
+    @State private var hasAppeared = false
     @FocusState private var isInputFocused: Bool
 
     private var messages: [ChatMessage] {
@@ -551,7 +575,7 @@ struct ChatContentView: View {
         guard let screen = NSScreen.main else { return 400 }
         
         // Minimum width for usability
-        let minWidth: CGFloat = 340
+        let minWidth: CGFloat = 360
         
         // Column-based sizing: grows as conversation gets longer
         let targetWidth: CGFloat
@@ -563,7 +587,7 @@ struct ChatContentView: View {
             targetWidth = 480
         } else {
             // Few or no messages = compact
-            targetWidth = 400
+            targetWidth = 420
         }
         
         // Constrain to screen size (max 50% of screen width)
@@ -576,146 +600,284 @@ struct ChatContentView: View {
         guard let screen = NSScreen.main else { return 500 }
         
         // Base height components
-        let headerHeight: CGFloat = 44  // Header with padding
-        let inputHeight: CGFloat = 46   // Input field with padding
+        let headerHeight: CGFloat = 52  // Header with padding
+        let inputHeight: CGFloat = 60   // Input field with padding
         let dividers: CGFloat = 2       // Two dividers
         
         // Calculate content height based on number of messages
         let messageCount = messages.count
-        let estimatedMessageHeight: CGFloat = 60 // Average message height
+        let estimatedMessageHeight: CGFloat = 65 // Average message height
         let estimatedContentHeight = CGFloat(messageCount) * estimatedMessageHeight
         
         // Minimum content area for empty state
-        let minContentHeight: CGFloat = 200
+        let minContentHeight: CGFloat = 220
         
         // Calculate total with constraints
         let totalHeight = headerHeight + max(estimatedContentHeight, minContentHeight) + inputHeight + dividers
         
         // Constrain to screen size (leave some space at bottom)
         let maxHeight = screen.frame.height * 0.7
-        let minHeight: CGFloat = 380
+        let minHeight: CGFloat = 400
         
         return min(max(totalHeight, minHeight), maxHeight)
     }
     
     var body: some View {
         VStack(spacing: 0) {
-            // Header
-            HStack {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(
-                        LinearGradient(colors: [.purple, .blue], startPoint: .topLeading, endPoint: .bottomTrailing)
-                    )
+            // Aurora Header
+            HStack(spacing: 10) {
+                // Animated sparkle icon
+                ZStack {
+                    Circle()
+                        .fill(
+                            RadialGradient(
+                                colors: [Color.aurora.purple.opacity(0.3), Color.clear],
+                                center: .center,
+                                startRadius: 0,
+                                endRadius: 16
+                            )
+                        )
+                        .frame(width: 32, height: 32)
+                    
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [Color.aurora.cyan, Color.aurora.purple],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .symbolEffect(.pulse.byLayer, options: .repeating)
+                }
 
                 Text("AI Assistant")
                     .font(.system(size: 14, weight: .semibold, design: .rounded))
-                    .foregroundColor(.primary)
+                    .foregroundColor(Color.aurora.textPrimary)
 
                 Spacer()
+                
+                // Message count badge
+                if !messages.isEmpty {
+                    Text("\(messages.count)")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .foregroundColor(Color.aurora.textSecondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.white.opacity(0.1))
+                        .clipShape(Capsule())
+                }
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+            .padding(.vertical, 14)
+            .background(Color.white.opacity(0.03))
 
-            Divider()
+            // Subtle divider
+            Rectangle()
+                .fill(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.05), Color.white.opacity(0.1), Color.white.opacity(0.05)],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+                .frame(height: 1)
 
             // Messages
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 10) {
+                    LazyVStack(alignment: .leading, spacing: 12) {
                         if messages.isEmpty && !isLoading {
-                            VStack(spacing: 16) {
-                                Image(systemName: "sparkles")
-                                    .font(.system(size: 32))
-                                    .foregroundStyle(.secondary)
+                            // Aurora empty state
+                            VStack(spacing: 20) {
+                                // Floating glow effect
+                                ZStack {
+                                    Circle()
+                                        .fill(Color.aurora.purple.opacity(0.15))
+                                        .frame(width: 80, height: 80)
+                                        .blur(radius: 20)
+                                    
+                                    Circle()
+                                        .fill(Color.aurora.cyan.opacity(0.1))
+                                        .frame(width: 60, height: 60)
+                                        .blur(radius: 15)
+                                        .offset(x: -10, y: -10)
+                                    
+                                    Image(systemName: "sparkles")
+                                        .font(.system(size: 36, weight: .light))
+                                        .foregroundStyle(
+                                            LinearGradient(
+                                                colors: [Color.aurora.cyan, Color.aurora.purple],
+                                                startPoint: .topLeading,
+                                                endPoint: .bottomTrailing
+                                            )
+                                        )
+                                }
+                                .scaleEffect(hasAppeared ? 1 : 0.8)
+                                .opacity(hasAppeared ? 1 : 0)
+                                
                                 Text("How can I help?")
-                                    .font(.system(size: 14))
-                                    .foregroundColor(.secondary)
+                                    .font(.system(size: 16, weight: .medium, design: .rounded))
+                                    .foregroundColor(Color.aurora.textSecondary)
+                                    .opacity(hasAppeared ? 1 : 0)
 
-                                // Suggestion chips
-                                VStack(spacing: 8) {
-                                    HStack(spacing: 8) {
-                                        SuggestionChip(text: "Upcoming movies", icon: "film") {
-                                            inputText = "Show me upcoming movies"
+                                // Suggestion chips with staggered animation
+                                VStack(spacing: 10) {
+                                    HStack(spacing: 10) {
+                                        SuggestionChip(text: "Find beach photos", icon: "photo") {
+                                            inputText = "Show me beach photos"
                                             sendMessage()
                                         }
-                                        SuggestionChip(text: "Today's calendar", icon: "calendar") {
-                                            inputText = "What's on my calendar today?"
+                                        .opacity(hasAppeared ? 1 : 0)
+                                        .offset(y: hasAppeared ? 0 : 10)
+                                        
+                                        SuggestionChip(text: "Sunset shots", icon: "sun.horizon") {
+                                            inputText = "Find sunset photos"
                                             sendMessage()
                                         }
+                                        .opacity(hasAppeared ? 1 : 0)
+                                        .offset(y: hasAppeared ? 0 : 10)
                                     }
-                                    HStack(spacing: 8) {
-                                        SuggestionChip(text: "Popular movies", icon: "star") {
-                                            inputText = "Show popular movies right now"
+                                    HStack(spacing: 10) {
+                                        SuggestionChip(text: "Recent videos", icon: "video") {
+                                            inputText = "Show recent videos"
                                             sendMessage()
                                         }
-                                        SuggestionChip(text: "This week", icon: "calendar.badge.clock") {
-                                            inputText = "Show my calendar for this week"
+                                        .opacity(hasAppeared ? 1 : 0)
+                                        .offset(y: hasAppeared ? 0 : 10)
+                                        
+                                        SuggestionChip(text: "Last trip", icon: "airplane") {
+                                            inputText = "Photos from my last trip"
                                             sendMessage()
                                         }
+                                        .opacity(hasAppeared ? 1 : 0)
+                                        .offset(y: hasAppeared ? 0 : 10)
                                     }
                                 }
                                 .padding(.top, 8)
                             }
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .padding(.top, 40)
+                            .padding(.top, 50)
                         } else {
-                            ForEach(messages) { msg in
+                            ForEach(Array(messages.enumerated()), id: \.element.id) { index, msg in
                                 MessageRow(message: msg)
                                     .id(msg.id)
                             }
 
-                            // Loading indicator
+                            // Loading indicator with aurora styling
                             if isLoading {
-                                HStack(spacing: 8) {
-                                    ProgressView()
-                                        .scaleEffect(0.7)
+                                HStack(spacing: 10) {
+                                    ZStack {
+                                        Circle()
+                                            .fill(Color.aurora.purple.opacity(0.2))
+                                            .frame(width: 24, height: 24)
+                                        
+                                        ProgressView()
+                                            .scaleEffect(0.5)
+                                            .tint(Color.aurora.purple)
+                                    }
+                                    
                                     Text("Thinking...")
-                                        .font(.system(size: 12))
-                                        .foregroundStyle(.secondary)
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundStyle(Color.aurora.textSecondary)
                                 }
-                                .padding(.vertical, 8)
+                                .padding(.vertical, 10)
+                                .padding(.horizontal, 14)
+                                .background {
+                                    RoundedRectangle(cornerRadius: 14)
+                                        .fill(.ultraThinMaterial)
+                                }
                             }
                         }
                     }
-                    .padding(12)
+                    .padding(14)
                 }
                 .onChange(of: messages.count) { _, _ in
                     if let last = messages.last {
-                        withAnimation {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                             proxy.scrollTo(last.id, anchor: .bottom)
                         }
                     }
                 }
             }
 
-            Divider()
+            // Subtle divider
+            Rectangle()
+                .fill(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.05), Color.white.opacity(0.1), Color.white.opacity(0.05)],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+                .frame(height: 1)
 
-            // Input
-            HStack(spacing: 10) {
+            // Aurora Input Field
+            HStack(spacing: 12) {
                 TextField("Ask anything...", text: $inputText)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 13))
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundColor(Color.aurora.textPrimary)
                     .focused($isInputFocused)
                     .onSubmit { sendMessage() }
 
+                // Send button
                 Button(action: sendMessage) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 22))
-                        .foregroundStyle(
-                            inputText.isEmpty ? AnyShapeStyle(.secondary) :
-                            AnyShapeStyle(LinearGradient(colors: [.purple, .blue], startPoint: .topLeading, endPoint: .bottomTrailing))
-                        )
+                    ZStack {
+                        Circle()
+                            .fill(
+                                inputText.isEmpty
+                                    ? AnyShapeStyle(Color.white.opacity(0.08))
+                                    : AnyShapeStyle(LinearGradient(
+                                        colors: [Color.aurora.cyan, Color.aurora.purple],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                      ))
+                            )
+                            .frame(width: 28, height: 28)
+                        
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(inputText.isEmpty ? Color.aurora.textTertiary : .white)
+                    }
+                    .shadow(color: inputText.isEmpty ? .clear : Color.aurora.purple.opacity(0.4), radius: 6, y: 2)
                 }
                 .buttonStyle(.plain)
                 .disabled(inputText.isEmpty)
             }
-            .padding(12)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(Color.white.opacity(0.03))
+        }
+        .background {
+            // Subtle aurora background glow
+            ZStack {
+                Color.black.opacity(0.95)
+                
+                // Ambient aurora glow
+                Circle()
+                    .fill(Color.aurora.purple.opacity(0.08))
+                    .frame(width: 200, height: 200)
+                    .blur(radius: 60)
+                    .offset(x: 80, y: -50)
+                
+                Circle()
+                    .fill(Color.aurora.cyan.opacity(0.06))
+                    .frame(width: 150, height: 150)
+                    .blur(radius: 50)
+                    .offset(x: -60, y: 100)
+            }
         }
         .frame(width: windowWidth, height: windowHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
         .animation(.smooth(duration: 0.3), value: windowWidth)
         .animation(.smooth(duration: 0.3), value: windowHeight)
-        .onAppear { isInputFocused = true }
+        .onAppear {
+            isInputFocused = true
+            withAnimation(.spring(response: 0.5, dampingFraction: 0.7).delay(0.1)) {
+                hasAppeared = true
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("SendChatMessage"))) { notification in
             if let message = notification.userInfo?["message"] as? String {
                 inputText = message
@@ -758,57 +920,7 @@ struct ChatContentView: View {
     }
 
     private func handleToolResult(_ result: ToolResult) {
-        let formatter = DateFormatter()
-        formatter.timeStyle = .short
-
         switch result.result {
-        case .movies(let movies):
-            let displayItems = movies.map { movie in
-                MovieDisplayItem(
-                    id: movie.id,
-                    title: movie.title,
-                    overview: movie.overview,
-                    posterURL: movie.posterURL,
-                    trailerURL: movie.trailerURL,
-                    releaseDate: movie.releaseDate,
-                    rating: movie.rating
-                )
-            }
-            if !displayItems.isEmpty {
-                ContentManager.shared.showMovies(displayItems)
-            }
-
-        case .movieDetail(let movie, let info):
-            ContentManager.shared.showMovieDetail(movie, info: info)
-
-        case .calendarEvents(let events):
-            let displayItems = events.map { event in
-                let timeStr = event.isAllDay ? "All day" : formatter.string(from: event.startDate)
-                return CalendarDisplayItem(
-                    id: event.id,
-                    title: event.title,
-                    time: timeStr,
-                    location: event.location,
-                    isAllDay: event.isAllDay,
-                    startDate: event.startDate
-                )
-            }
-            ContentManager.shared.showCalendar(displayItems)
-
-        case .reminders(let reminders):
-            let displayItems = reminders.map { reminder in
-                ReminderDisplayItem(
-                    id: reminder.id,
-                    title: reminder.title,
-                    notes: reminder.notes,
-                    dueDate: reminder.dueDateText,
-                    isCompleted: reminder.isCompleted,
-                    priority: reminder.priorityText,
-                    listName: reminder.listName
-                )
-            }
-            ContentManager.shared.showReminders(displayItems)
-
         case .contacts(let contacts):
             let displayItems = contacts.map { contact in
                 ContactDisplayItem(
@@ -825,53 +937,6 @@ struct ChatContentView: View {
             }
             ContentManager.shared.showContacts(displayItems)
 
-        case .systemInfo(let info):
-            let displayInfo = SystemDisplayInfo(
-                cpuUsage: info.cpuUsage,
-                totalMemoryGB: info.totalMemoryGB,
-                usedMemoryGB: info.usedMemoryGB,
-                memoryUsagePercent: info.memoryUsagePercent,
-                totalDiskGB: info.totalDiskGB,
-                freeDiskGB: info.freeDiskGB,
-                diskUsagePercent: info.diskUsagePercent,
-                uptime: info.uptime
-            )
-            ContentManager.shared.showSystemInfo(displayInfo)
-
-        case .carResults(let cars):
-            // Show as images for now
-            let items = cars.compactMap { car -> MediaItem? in
-                guard let url = car.imageURL else { return nil }
-                return MediaItem(title: "\(car.year) \(car.make) \(car.model)", url: url)
-            }
-            if !items.isEmpty {
-                ContentManager.shared.showImages(items)
-            }
-
-        case .battery(let info):
-            ContentManager.shared.showBattery(info)
-
-        case .weather(let info):
-            ContentManager.shared.showWeather(info)
-
-        case .trip(let info):
-            ContentManager.shared.showTrip(info)
-
-        case .places(let places, let mapSnapshot):
-            let displayItems = places.map { place in
-                PlaceDisplayItem(
-                    id: place.id,
-                    name: place.name,
-                    category: place.category,
-                    address: place.address,
-                    coordinate: place.coordinate,
-                    phoneNumber: place.phoneNumber,
-                    url: place.url,
-                    distanceText: place.distanceText
-                )
-            }
-            ContentManager.shared.showPlaces(displayItems, mapSnapshot: mapSnapshot)
-
         case .photoResults(let results, let contactSheet):
             ContentManager.shared.showPhotoResults(results, contactSheet: contactSheet)
 
@@ -886,24 +951,48 @@ struct ChatContentView: View {
 
 struct MessageRow: View {
     let message: ChatMessage
+    @State private var hasAppeared = false
 
     var body: some View {
         HStack {
-            if message.role == .user { Spacer(minLength: 50) }
+            if message.role == .user { Spacer(minLength: 40) }
 
             Text(message.content)
-                .font(.system(size: 13))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(
-                    message.role == .user
-                        ? AnyShapeStyle(LinearGradient(colors: [.purple.opacity(0.8), .blue.opacity(0.8)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                        : AnyShapeStyle(Color.gray.opacity(0.15))
-                )
-                .foregroundColor(message.role == .user ? .white : .primary)
-                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .font(.system(size: 13, weight: .regular))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background {
+                    if message.role == .user {
+                        // Aurora gradient bubble for user
+                        RoundedRectangle(cornerRadius: 16)
+                            .fill(
+                                LinearGradient(
+                                    colors: [Color.aurora.cyan, Color.aurora.purple, Color.aurora.pink],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .shadow(color: Color.aurora.purple.opacity(0.3), radius: 8, y: 2)
+                    } else {
+                        // Frosted glass for assistant
+                        RoundedRectangle(cornerRadius: 16)
+                            .fill(.ultraThinMaterial)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16)
+                                    .strokeBorder(Color.white.opacity(0.1), lineWidth: 0.5)
+                            )
+                    }
+                }
+                .foregroundColor(message.role == .user ? .white : Color.aurora.textPrimary)
+                .scaleEffect(hasAppeared ? 1 : 0.9)
+                .opacity(hasAppeared ? 1 : 0)
 
-            if message.role == .assistant { Spacer(minLength: 50) }
+            if message.role == .assistant { Spacer(minLength: 40) }
+        }
+        .onAppear {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
+                hasAppeared = true
+            }
         }
     }
 }
@@ -922,21 +1011,52 @@ struct SuggestionChip: View {
     let text: String
     let icon: String
     let action: () -> Void
+    
+    @State private var isHovered = false
+    @State private var isPressed = false
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 6) {
                 Image(systemName: icon)
-                    .font(.system(size: 11))
+                    .font(.system(size: 11, weight: .medium))
                 Text(text)
-                    .font(.system(size: 12))
+                    .font(.system(size: 12, weight: .medium))
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color.gray.opacity(0.1))
-            .clipShape(Capsule())
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .foregroundStyle(isHovered ? Color.aurora.textPrimary : Color.aurora.textSecondary)
+            .background {
+                Capsule()
+                    .fill(isHovered ? Color.white.opacity(0.15) : Color.white.opacity(0.08))
+                    .overlay(
+                        Capsule()
+                            .strokeBorder(
+                                isHovered
+                                    ? AnyShapeStyle(LinearGradient(
+                                        colors: [Color.aurora.cyan.opacity(0.5), Color.aurora.purple.opacity(0.5)],
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                      ))
+                                    : AnyShapeStyle(Color.white.opacity(0.1)),
+                                lineWidth: 1
+                            )
+                    )
+            }
+            .shadow(color: isHovered ? Color.aurora.purple.opacity(0.2) : .clear, radius: 8)
+            .scaleEffect(isPressed ? 0.95 : 1)
         }
         .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.2)) {
+                isHovered = hovering
+            }
+        }
+        .onLongPressGesture(minimumDuration: 0, maximumDistance: .infinity, pressing: { pressing in
+            withAnimation(.spring(response: 0.2, dampingFraction: 0.6)) {
+                isPressed = pressing
+            }
+        }, perform: {})
     }
 }
 
@@ -1408,31 +1528,33 @@ struct MovieListView: View {
         switch response {
         case .toolResults(_, let results):
             for result in results {
+                // Handle tool results (contacts, photos, text, error)
                 switch result.result {
-                case .movieDetail(let movie, let info):
-                    ContentManager.shared.showMovieDetail(movie, info: info)
-                case .movies(let movies):
-                    let displayItems = movies.map { movie in
-                        MovieDisplayItem(
-                            id: movie.id,
-                            title: movie.title,
-                            overview: movie.overview,
-                            posterURL: movie.posterURL,
-                            trailerURL: movie.trailerURL,
-                            releaseDate: movie.releaseDate,
-                            rating: movie.rating
+                case .photoResults(let photos, let contactSheet):
+                    ContentManager.shared.showPhotoResults(photos, contactSheet: contactSheet)
+                case .contacts(let contacts):
+                    let displayItems = contacts.map { contact in
+                        ContactDisplayItem(
+                            id: contact.id,
+                            name: contact.name,
+                            nickname: contact.nickname,
+                            organization: contact.organization,
+                            jobTitle: contact.jobTitle,
+                            phones: contact.phones,
+                            emails: contact.emails,
+                            address: contact.address,
+                            birthday: contact.birthday
                         )
                     }
-                    ContentManager.shared.showMovies(displayItems)
-                default:
-                    break
+                    ContentManager.shared.showContacts(displayItems)
+                case .text(let text):
+                    print("Tool text result: \(text)")
+                case .error(let error):
+                    print("Tool error: \(error)")
                 }
             }
         case .text(let text):
-            // Show as rich text if there's a selected movie
-            if let movie = selectedMovie {
-                ContentManager.shared.showMovieDetail(movie, info: text)
-            }
+            print("Response text: \(text)")
         case .error(let error):
             print("Error: \(error)")
         }
@@ -1749,27 +1871,31 @@ struct MovieDetailView: View {
         case .toolResults(_, let results):
             for result in results {
                 switch result.result {
-                case .movieDetail(let movie, let info):
-                    ContentManager.shared.showMovieDetail(movie, info: info)
-                case .movies(let movies):
-                    let displayItems = movies.map { movie in
-                        MovieDisplayItem(
-                            id: movie.id,
-                            title: movie.title,
-                            overview: movie.overview,
-                            posterURL: movie.posterURL,
-                            trailerURL: movie.trailerURL,
-                            releaseDate: movie.releaseDate,
-                            rating: movie.rating
+                case .photoResults(let photos, let contactSheet):
+                    ContentManager.shared.showPhotoResults(photos, contactSheet: contactSheet)
+                case .contacts(let contacts):
+                    let displayItems = contacts.map { contact in
+                        ContactDisplayItem(
+                            id: contact.id,
+                            name: contact.name,
+                            nickname: contact.nickname,
+                            organization: contact.organization,
+                            jobTitle: contact.jobTitle,
+                            phones: contact.phones,
+                            emails: contact.emails,
+                            address: contact.address,
+                            birthday: contact.birthday
                         )
                     }
-                    ContentManager.shared.showMovies(displayItems)
-                default:
-                    break
+                    ContentManager.shared.showContacts(displayItems)
+                case .text(let text):
+                    print("Tool text: \(text)")
+                case .error(let error):
+                    print("Tool error: \(error)")
                 }
             }
         case .text(let text):
-            ContentManager.shared.showMovieDetail(movie, info: text)
+            print("Response: \(text)")
         case .error(let error):
             print("Error: \(error)")
         }
@@ -2353,7 +2479,7 @@ struct RouteMapView: View {
     }
 }
 
-// MARK: - Photo Search Results View
+// MARK: - Photo Search Results View (Aurora Design)
 
 struct PhotoSearchResultsView: View {
     let results: [PhotoSearchResult]
@@ -2361,113 +2487,174 @@ struct PhotoSearchResultsView: View {
     @State private var chatText: String = ""
     @State private var isProcessing: Bool = false
     @State private var selectedResult: PhotoSearchResult?
+    @State private var hoveredId: String?
+    @State private var hasAppeared = false
 
-    private var viewWidth: CGFloat { 450 }
-    private var viewHeight: CGFloat { 500 }
+    private var viewWidth: CGFloat { 480 }
+    private var viewHeight: CGFloat { 540 }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            HStack {
-                Image(systemName: results.first?.info.mediaType == "video" ? "film.stack" : "photo.stack")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.purple)
+        ZStack {
+            // Subtle aurora background gradient
+            LinearGradient(
+                colors: [
+                    Color.aurora.purple.opacity(0.08),
+                    Color.aurora.cyan.opacity(0.05),
+                    Color.clear
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
 
-                Text("Found \(results.count) \(results.first?.info.mediaType == "video" ? "video" : "photo")\(results.count == 1 ? "" : "s")")
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
-
-                Spacer()
-
-                if let confidence = results.first?.confidence {
-                    Text(confidence.capitalized)
-                        .font(.system(size: 10, weight: .medium))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(confidenceColor(confidence).opacity(0.15))
-                        .foregroundStyle(confidenceColor(confidence))
-                        .clipShape(Capsule())
-                }
-
-                Button {
-                    ContentManager.shared.resetChat()
-                } label: {
-                    Image(systemName: "arrow.counterclockwise.circle.fill")
-                        .font(.system(size: 18))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-
-            Divider()
-
-            ScrollView {
-                VStack(spacing: 12) {
-                    // Contact sheet preview
-                    if let sheet = contactSheet {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Search Overview")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(.secondary)
-
-                            Image(nsImage: sheet)
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .frame(maxHeight: 150)
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+            VStack(spacing: 0) {
+                // Header with frosted glass
+                HStack(spacing: 12) {
+                    // Icon with glow
+                    ZStack {
+                        Circle()
+                            .fill(
+                                LinearGradient(
+                                    colors: [Color.aurora.cyan, Color.aurora.purple],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
                                 )
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.top, 12)
+                            )
+                            .frame(width: 36, height: 36)
+                            .shadow(color: Color.aurora.purple.opacity(0.4), radius: 8, y: 2)
+
+                        Image(systemName: results.first?.info.mediaType == "video" ? "film.stack.fill" : "photo.stack.fill")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.white)
                     }
 
-                    // Results grid
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], spacing: 8) {
-                        ForEach(results, id: \.info.id) { result in
-                            PhotoResultCard(result: result) {
-                                selectedResult = result
-                                openInPhotos(result)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Found \(results.count) \(results.first?.info.mediaType == "video" ? "video" : "photo")\(results.count == 1 ? "" : "s")")
+                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+
+                        if let confidence = results.first?.confidence {
+                            AuroraBadge(
+                                text: confidence.capitalized,
+                                color: confidenceColor(confidence),
+                                icon: confidence.lowercased() == "smart-search" ? "sparkles" : nil
+                            )
+                        }
+                    }
+
+                    Spacer()
+
+                    AuroraIconButton(icon: "arrow.counterclockwise") {
+                        ContentManager.shared.resetChat()
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 16)
+                .background(.ultraThinMaterial)
+
+                // Divider with gradient
+                Rectangle()
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.aurora.cyan.opacity(0.3), Color.aurora.purple.opacity(0.3), Color.aurora.pink.opacity(0.3)],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(height: 1)
+
+                ScrollView {
+                    LazyVStack(spacing: 16) {
+                        // Contact sheet preview with enhanced styling
+                        if let sheet = contactSheet {
+                            AuroraCard(padding: 12, cornerRadius: 14) {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    HStack {
+                                        Image(systemName: "square.grid.3x3.fill")
+                                            .font(.system(size: 12, weight: .medium))
+                                            .foregroundStyle(Color.aurora.cyan)
+                                        Text("SEARCH OVERVIEW")
+                                            .font(.system(size: 10, weight: .semibold, design: .rounded))
+                                            .foregroundStyle(Color.aurora.textTertiary)
+                                            .tracking(1)
+                                    }
+
+                                    Image(nsImage: sheet)
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fit)
+                                        .frame(maxHeight: 140)
+                                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 10)
+                                                .strokeBorder(Color.white.opacity(0.1), lineWidth: 0.5)
+                                        )
+                                }
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.top, 12)
+                        }
+
+                        // Results grid with staggered animation
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 10)], spacing: 10) {
+                            ForEach(Array(results.enumerated()), id: \.element.info.id) { index, result in
+                                AuroraPhotoCard(
+                                    result: result,
+                                    isHovered: hoveredId == result.info.id,
+                                    animationDelay: Double(index) * 0.05
+                                ) {
+                                    selectedResult = result
+                                    openInPhotos(result)
+                                }
+                                .onHover { isHovered in
+                                    withAnimation(.auroraSpring) {
+                                        hoveredId = isHovered ? result.info.id : nil
+                                    }
+                                }
+                                .opacity(hasAppeared ? 1 : 0)
+                                .offset(y: hasAppeared ? 0 : 20)
+                                .animation(
+                                    .spring(response: 0.5, dampingFraction: 0.7).delay(Double(index) * 0.03),
+                                    value: hasAppeared
+                                )
                             }
                         }
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 16)
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 12)
                 }
+
+                // Divider
+                Rectangle()
+                    .fill(Color.white.opacity(0.08))
+                    .frame(height: 1)
+
+                // Chat input for follow-up queries
+                AuroraChatInput(text: $chatText, isProcessing: $isProcessing)
             }
-
-            Divider()
-
-            // Chat input for follow-up queries
-            ChatInputField(text: $chatText, isProcessing: $isProcessing)
         }
         .frame(width: viewWidth, height: viewHeight)
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                hasAppeared = true
+            }
+        }
     }
 
     private func confidenceColor(_ confidence: String) -> Color {
         switch confidence.lowercased() {
-        case "high": return .green
-        case "medium": return .orange
-        default: return .gray
+        case "high", "smart-search": return Color.aurora.success
+        case "medium": return Color.aurora.warning
+        default: return Color.aurora.textTertiary
         }
     }
 
     private func openInPhotos(_ result: PhotoSearchResult) {
-        // Open the specific asset in Photos app using its local identifier
         let asset = result.asset
-        
-        // Try to get the PHAsset's URL and open it
-        // First, try the photos-redirect URL scheme which opens the specific asset
+
         if let photosURL = URL(string: "photos-redirect://asset/\(asset.localIdentifier)") {
             if NSWorkspace.shared.open(photosURL) {
                 return
             }
         }
-        
-        // Fallback: Open Photos and use AppleScript to navigate
+
         let escapedId = asset.localIdentifier.replacingOccurrences(of: "'", with: "\\'")
         let script = """
         tell application "Photos"
@@ -2477,95 +2664,238 @@ struct PhotoSearchResultsView: View {
             spotlight targetAsset
         end tell
         """
-        
+
         if let appleScript = NSAppleScript(source: script) {
             var error: NSDictionary?
             appleScript.executeAndReturnError(&error)
             if error != nil {
-                // Final fallback: just open Photos app
                 NSWorkspace.shared.open(URL(string: "photos://")!)
             }
         }
     }
 }
 
-struct PhotoResultCard: View {
+// MARK: - Aurora Photo Card
+
+struct AuroraPhotoCard: View {
     let result: PhotoSearchResult
+    let isHovered: Bool
+    var animationDelay: Double = 0
     let onTap: () -> Void
+
     @State private var thumbnail: NSImage?
+    @State private var isPressed = false
     private let photosProvider = PhotosProvider()
 
     var body: some View {
         Button(action: onTap) {
-            VStack(spacing: 4) {
+            VStack(spacing: 6) {
                 ZStack {
+                    // Thumbnail or placeholder
                     if let thumb = thumbnail {
                         Image(nsImage: thumb)
                             .resizable()
                             .aspectRatio(contentMode: .fill)
-                            .frame(width: 110, height: 80)
-                            .clipped()
+                            .frame(width: 130, height: 95)
                     } else {
-                        Rectangle()
-                            .fill(Color.gray.opacity(0.2))
-                            .frame(width: 110, height: 80)
-                            .overlay(
-                                ProgressView()
-                                    .scaleEffect(0.6)
-                            )
+                        ThumbnailPlaceholder()
+                            .frame(width: 130, height: 95)
                     }
 
-                    // Video indicator
+                    // Overlay gradient
+                    VStack {
+                        Spacer()
+                        LinearGradient(
+                            colors: [Color.black.opacity(0.5), Color.clear],
+                            startPoint: .bottom,
+                            endPoint: .top
+                        )
+                        .frame(height: 40)
+                    }
+
+                    // Video badge
                     if result.info.mediaType == "video" {
                         VStack {
                             Spacer()
                             HStack {
-                                Image(systemName: "play.fill")
-                                    .font(.system(size: 8))
-                                if let duration = result.info.duration {
-                                    Text(duration)
-                                        .font(.system(size: 9, weight: .medium))
+                                HStack(spacing: 4) {
+                                    Image(systemName: "play.fill")
+                                        .font(.system(size: 8, weight: .bold))
+                                    if let duration = result.info.duration {
+                                        Text(duration)
+                                            .font(.system(size: 9, weight: .semibold, design: .rounded))
+                                    }
                                 }
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(.ultraThinMaterial)
+                                .clipShape(Capsule())
+
+                                Spacer()
                             }
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.black.opacity(0.6))
-                            .clipShape(Capsule())
-                            .padding(4)
+                            .padding(6)
                         }
-                        .frame(width: 110, height: 80, alignment: .bottomLeading)
+                    }
+
+                    // Favorite indicator
+                    if result.info.isFavorite {
+                        VStack {
+                            HStack {
+                                Spacer()
+                                Image(systemName: "heart.fill")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(Color.aurora.pink)
+                                    .padding(6)
+                            }
+                            Spacer()
+                        }
                     }
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(
+                            isHovered ?
+                                AnyShapeStyle(AuroraGradient.primary) :
+                                AnyShapeStyle(Color.white.opacity(0.1)),
+                            lineWidth: isHovered ? 2 : 0.5
+                        )
+                )
+                .shadow(color: isHovered ? Color.aurora.purple.opacity(0.3) : Color.black.opacity(0.2), radius: isHovered ? 12 : 4, y: isHovered ? 6 : 2)
 
-                // Date if available
+                // Date label
                 if let date = result.info.creationDate {
                     Text(date)
-                        .font(.system(size: 9))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .foregroundStyle(Color.aurora.textTertiary)
                         .lineLimit(1)
                 }
             }
         }
         .buttonStyle(.plain)
+        .scaleEffect(isPressed ? 0.96 : (isHovered ? 1.03 : 1.0))
+        .animation(.auroraSpring, value: isHovered)
+        .animation(.spring(response: 0.2, dampingFraction: 0.6), value: isPressed)
+        .onLongPressGesture(minimumDuration: 0, maximumDistance: .infinity, pressing: { pressing in
+            isPressed = pressing
+        }, perform: {})
         .task {
-            // Try indexed thumbnail first (high-res 800x600, already cached)
-            if result.info.mediaType == "video" {
-                let indexService = await VideoIndexService.shared
-                if let entry = await indexService.getIndexEntry(for: result.asset),
-                   let firstThumb = entry.visual.thumbnails.first,
-                   let cachedThumb = await indexService.getThumbnailImage(filename: firstThumb) {
-                    thumbnail = cachedThumb
-                    return
-                }
-            }
-            // Fallback: generate HIGH QUALITY thumbnail (not fast/degraded)
             thumbnail = await photosProvider.generateThumbnail(
-                for: result.asset, 
-                size: CGSize(width: 440, height: 320),  // 4x display size for retina
+                for: result.asset,
+                size: CGSize(width: 520, height: 380),
                 highQuality: true
             )
+        }
+    }
+}
+
+// MARK: - Aurora Chat Input
+
+struct AuroraChatInput: View {
+    @Binding var text: String
+    @Binding var isProcessing: Bool
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(isFocused ? Color.aurora.cyan : Color.aurora.textTertiary)
+
+                TextField("Search more photos...", text: $text)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 14))
+                    .focused($isFocused)
+                    .onSubmit {
+                        guard !text.isEmpty && !isProcessing else { return }
+                        sendQuery()
+                    }
+
+                if !text.isEmpty {
+                    Button {
+                        text = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Color.aurora.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(
+                        isFocused ? AnyShapeStyle(AuroraGradient.subtle) : AnyShapeStyle(Color.white.opacity(0.1)),
+                        lineWidth: isFocused ? 1.5 : 0.5
+                    )
+            )
+
+            // Send button
+            Button {
+                sendQuery()
+            } label: {
+                ZStack {
+                    Circle()
+                        .fill(
+                            text.isEmpty ?
+                                AnyShapeStyle(Color.white.opacity(0.1)) :
+                                AnyShapeStyle(AuroraGradient.primary)
+                        )
+                        .frame(width: 36, height: 36)
+
+                    if isProcessing {
+                        ProgressView()
+                            .scaleEffect(0.6)
+                            .tint(.white)
+                    } else {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(text.isEmpty ? Color.aurora.textTertiary : .white)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(text.isEmpty || isProcessing)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(.ultraThinMaterial)
+    }
+
+    private func sendQuery() {
+        guard !text.isEmpty else { return }
+        let query = text
+        text = ""
+        isProcessing = true
+
+        Task {
+            let response = await AIService.shared.query(query)
+            await MainActor.run {
+                isProcessing = false
+                // Handle response via ContentManager
+                switch response {
+                case .text(let message):
+                    ContentManager.shared.showChat()
+                    ContentManager.shared.chatMessages.append(ChatMessage(role: .assistant, content: message))
+                case .toolResults(_, let results):
+                    for result in results {
+                        if case .photoResults(let photos, let sheet) = result.result {
+                            ContentManager.shared.showPhotoResults(photos, contactSheet: sheet)
+                        }
+                    }
+                case .error(let error):
+                    ContentManager.shared.showChat()
+                    ContentManager.shared.chatMessages.append(ChatMessage(role: .assistant, content: "Error: \(error)"))
+                }
+            }
         }
     }
 }
@@ -2742,33 +3072,88 @@ struct MapAnnotationItem: Identifiable {
 struct ChatInputField: View {
     @Binding var text: String
     @Binding var isProcessing: Bool
+    @FocusState private var isFocused: Bool
+    @State private var isHovered = false
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
+            // Input field with aurora styling
             TextField("Ask something...", text: $text)
                 .textFieldStyle(.plain)
-                .font(.system(size: 13))
+                .font(.system(size: 13, weight: .regular))
+                .foregroundColor(Color.aurora.textPrimary)
+                .focused($isFocused)
                 .onSubmit {
                     sendMessage()
                 }
 
+            // Send button or loading indicator
             if isProcessing {
-                ProgressView()
-                    .scaleEffect(0.7)
+                // Aurora pulsing loader
+                ZStack {
+                    Circle()
+                        .fill(Color.aurora.purple.opacity(0.2))
+                        .frame(width: 28, height: 28)
+                    
+                    ProgressView()
+                        .scaleEffect(0.6)
+                        .tint(Color.aurora.purple)
+                }
             } else {
                 Button {
                     sendMessage()
                 } label: {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 22))
-                        .foregroundColor(text.isEmpty ? .gray : .orange)
+                    ZStack {
+                        Circle()
+                            .fill(
+                                text.isEmpty
+                                    ? AnyShapeStyle(Color.white.opacity(0.08))
+                                    : AnyShapeStyle(LinearGradient(
+                                        colors: [Color.aurora.cyan, Color.aurora.purple],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                      ))
+                            )
+                            .frame(width: 28, height: 28)
+                        
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(text.isEmpty ? Color.aurora.textTertiary : .white)
+                    }
+                    .shadow(color: text.isEmpty ? .clear : Color.aurora.purple.opacity(0.4), radius: 6, y: 2)
                 }
                 .buttonStyle(.plain)
                 .disabled(text.isEmpty)
             }
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 14)
         .padding(.vertical, 10)
+        .background {
+            RoundedRectangle(cornerRadius: 20)
+                .fill(.ultraThinMaterial)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20)
+                        .strokeBorder(
+                            isFocused
+                                ? AnyShapeStyle(LinearGradient(
+                                    colors: [Color.aurora.cyan.opacity(0.5), Color.aurora.purple.opacity(0.5)],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                  ))
+                                : AnyShapeStyle(Color.white.opacity(0.15)),
+                            lineWidth: 1
+                        )
+                )
+        }
+        .shadow(color: isFocused ? Color.aurora.purple.opacity(0.15) : .clear, radius: 8)
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.2)) {
+                isHovered = hovering
+            }
+        }
+        .onAppear {
+            isFocused = true
+        }
     }
 
     private func sendMessage() {
@@ -3621,55 +4006,148 @@ struct LoadingView: View {
     }
 }
 
-// MARK: - Indexing Progress View
+// MARK: - Indexing Progress View (Aurora Design)
 
 struct IndexingProgressView: View {
     let progress: IndexingProgress
 
-    private var viewWidth: CGFloat { 280 }
-    private var viewHeight: CGFloat { 50 }
+    private var viewWidth: CGFloat { 340 }
+    private var viewHeight: CGFloat { 72 }
+
+    @State private var pulseScale: CGFloat = 1.0
+    @State private var glowOpacity: Double = 0.3
 
     var body: some View {
-        HStack(spacing: 12) {
-            // Progress bar
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(Color.gray.opacity(0.2))
-                        .frame(height: 8)
-
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(
-                            LinearGradient(
-                                colors: [.blue, .cyan],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
+        HStack(spacing: 14) {
+            // Animated icon with aurora glow
+            ZStack {
+                // Pulsing glow
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            colors: [Color.aurora.cyan.opacity(glowOpacity), Color.clear],
+                            center: .center,
+                            startRadius: 0,
+                            endRadius: 25
                         )
-                        .frame(width: geo.size.width * progress.progressPercent, height: 8)
-                        .animation(.easeInOut(duration: 0.3), value: progress.progressPercent)
+                    )
+                    .frame(width: 50, height: 50)
+                    .scaleEffect(pulseScale)
+
+                // Icon background
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: phaseColors,
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 36, height: 36)
+                    .shadow(color: phaseColors.first?.opacity(0.4) ?? .clear, radius: 6, y: 2)
+
+                // Icon
+                Image(systemName: phaseIcon)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .symbolEffect(.pulse.byLayer, options: .repeating)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                // Phase label
+                Text(phaseLabel)
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color.aurora.textPrimary)
+
+                // Progress bar
+                AuroraProgressBar(progress: progress.progressPercent, height: 5, showGlow: true)
+
+                // Stats
+                HStack(spacing: 8) {
+                    Text("\(progress.current) / \(progress.total)")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Color.aurora.textTertiary)
+
+                    if progress.progressPercent > 0 {
+                        Text("•")
+                            .foregroundStyle(Color.aurora.textTertiary)
+                        Text("\(Int(progress.progressPercent * 100))%")
+                            .font(.system(size: 10, weight: .semibold, design: .rounded))
+                            .foregroundStyle(AuroraGradient.primary)
+                    }
                 }
             }
-            .frame(height: 8)
 
-            // Count
-            Text("\(progress.current)/\(progress.total)")
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .foregroundStyle(.secondary)
+            Spacer()
 
             // Cancel button
-            Button(action: {
-                VideoIndexService.shared.cancelIndexing()
+            AuroraIconButton(icon: "xmark", action: {
                 ContentManager.shared.showChat()
-            }) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 16))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
+            }, size: 28)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .background {
+            // Subtle aurora background
+            ZStack {
+                Color.black.opacity(0.85)
+
+                LinearGradient(
+                    colors: [
+                        phaseColors.first?.opacity(0.15) ?? .clear,
+                        Color.clear
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.15), Color.white.opacity(0.05)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.5
+                )
+        )
         .frame(width: viewWidth, height: viewHeight)
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true)) {
+                pulseScale = 1.15
+                glowOpacity = 0.5
+            }
+        }
+    }
+
+    private var phaseIcon: String {
+        switch progress.phase {
+        case .preparing: return "gearshape.fill"
+        case .analyzing, .analyzingVisual: return "sparkles"
+        case .transcribing: return "waveform"
+        case .complete: return "checkmark"
+        }
+    }
+
+    private var phaseLabel: String {
+        switch progress.phase {
+        case .preparing: return "Preparing..."
+        case .analyzing: return "Analyzing Photos"
+        case .analyzingVisual: return "Visual Analysis"
+        case .transcribing: return "Transcribing"
+        case .complete: return "Complete"
+        }
+    }
+
+    private var phaseColors: [Color] {
+        switch progress.phase {
+        case .preparing: return [Color.aurora.cyan, Color.aurora.blue]
+        case .analyzing, .analyzingVisual: return [Color.aurora.purple, Color.aurora.pink]
+        case .transcribing: return [Color.aurora.blue, Color.aurora.cyan]
+        case .complete: return [Color.aurora.success, Color.aurora.cyan]
+        }
     }
 }

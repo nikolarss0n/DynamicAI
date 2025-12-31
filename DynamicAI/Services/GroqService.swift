@@ -2,19 +2,17 @@ import Foundation
 import AVFoundation
 import Photos
 
-// MARK: - Groq Service (Whisper Transcription)
+// MARK: - Groq Service (Whisper Transcription + Llama Chat)
 
 actor GroqService {
     static let shared = GroqService()
 
-    private let apiEndpoint = "https://api.groq.com/openai/v1/audio/transcriptions"
-    private let model = "whisper-large-v3-turbo"
+    private let transcriptionEndpoint = "https://api.groq.com/openai/v1/audio/transcriptions"
+    private let chatEndpoint = "https://api.groq.com/openai/v1/chat/completions"
+    private let whisperModel = "whisper-large-v3-turbo"
+    private let chatModel = "llama-3.3-70b-versatile"  // Fast, capable model
 
     private init() {}
-
-    private nonisolated func log(_ message: String) {
-        Log.shared.print("Groq", message)
-    }
     
     // MARK: - API Key
 
@@ -63,31 +61,29 @@ actor GroqService {
     /// Transcribes audio from raw data
     func transcribe(audioData: Data, filename: String, language: String? = nil) async throws -> TranscriptionResult {
         guard let apiKey = apiKey else {
-            log("❌ No API key found")
+            log.error(.video, "No Groq API key found")
             throw GroqError.noAPIKey
         }
 
         // Check file size (25MB limit for free tier)
         let maxSize = 25 * 1024 * 1024
         guard audioData.count <= maxSize else {
-            log("❌ File too large: \(audioData.count / 1024)KB (max \(maxSize / 1024 / 1024)MB)")
+            log.error(.video, "File too large", details: ["size": "\(audioData.count / 1024)KB", "max": "\(maxSize / 1024 / 1024)MB"])
             throw GroqError.fileTooLarge(audioData.count, maxSize)
         }
 
         // Log request details
-        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        log("📤 REQUEST")
-        log("   endpoint: \(apiEndpoint)")
-        log("   model: \(model)")
-        log("   file: \(filename)")
-        log("   size: \(audioData.count / 1024)KB")
-        log("   language: \(language ?? "auto")")
-        log("   format: verbose_json")
-        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        log.section("Groq Whisper Transcription")
+        log.info(.video, "Transcription request", details: [
+            "file": filename,
+            "size": "\(audioData.count / 1024)KB",
+            "language": language ?? "auto",
+            "model": whisperModel
+        ])
 
         // Build multipart form data
         let boundary = UUID().uuidString
-        var request = URLRequest(url: URL(string: apiEndpoint)!)
+        var request = URLRequest(url: URL(string: transcriptionEndpoint)!)
         request.httpMethod = "POST"
         request.setValue("Bearer \(String(apiKey.prefix(10)))...", forHTTPHeaderField: "Authorization")
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
@@ -104,7 +100,7 @@ actor GroqService {
         // Add model
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"model\"\r\n\r\n".data(using: .utf8)!)
-        body.append("\(model)\r\n".data(using: .utf8)!)
+        body.append("\(whisperModel)\r\n".data(using: .utf8)!)
 
         // Add response format (verbose_json for timestamps)
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
@@ -129,27 +125,26 @@ actor GroqService {
         let elapsed = Date().timeIntervalSince(startTime)
 
         guard let httpResponse = response as? HTTPURLResponse else {
-            log("❌ Invalid response type")
+            log.error(.video, "Invalid response type")
             throw GroqError.invalidResponse
         }
 
-        log("📥 RESPONSE (\(String(format: "%.2f", elapsed))s)")
-        log("   status: \(httpResponse.statusCode)")
-
         if httpResponse.statusCode != 200 {
             let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"
-            log("❌ Error: \(errorBody)")
+            log.error(.video, "Groq API error", details: ["status": httpResponse.statusCode, "error": errorBody])
             throw GroqError.apiError(httpResponse.statusCode, errorBody)
         }
 
         // Parse response
         let result = try JSONDecoder().decode(WhisperResponse.self, from: data)
 
-        log("   language: \(result.language ?? "unknown")")
-        log("   duration: \(String(format: "%.1f", result.duration ?? 0))s")
-        log("   segments: \(result.segments?.count ?? 0)")
-        log("   text: \"\(result.text.prefix(100))...\"")
-        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        log.success(.video, "Transcription complete", details: [
+            "duration": String(format: "%.1fs", elapsed),
+            "language": result.language ?? "unknown",
+            "audioDuration": String(format: "%.1fs", result.duration ?? 0),
+            "segments": result.segments?.count ?? 0,
+            "preview": String(result.text.prefix(60))
+        ])
 
         return TranscriptionResult(
             text: result.text,
@@ -165,6 +160,71 @@ actor GroqService {
         )
     }
     
+    // MARK: - Chat Completion (Llama)
+
+    /// Send a chat message to Groq Llama
+    /// - Parameters:
+    ///   - message: User message
+    ///   - systemPrompt: Optional system prompt
+    /// - Returns: Assistant response text
+    func chat(message: String, systemPrompt: String? = nil) async throws -> String {
+        guard let apiKey = apiKey else {
+            log.error(.app, "No Groq API key found")
+            throw GroqError.noAPIKey
+        }
+
+        log.section("Groq Llama Chat")
+        log.info(.app, "Chat request", details: [
+            "model": chatModel,
+            "messageLength": message.count
+        ])
+
+        var messages: [[String: String]] = []
+
+        if let system = systemPrompt {
+            messages.append(["role": "system", "content": system])
+        }
+        messages.append(["role": "user", "content": message])
+
+        let requestBody: [String: Any] = [
+            "model": chatModel,
+            "messages": messages,
+            "temperature": 0.7,
+            "max_tokens": 2048
+        ]
+
+        var request = URLRequest(url: URL(string: chatEndpoint)!)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
+
+        let startTime = Date()
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let elapsed = Date().timeIntervalSince(startTime)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw GroqError.invalidResponse
+        }
+
+        if httpResponse.statusCode != 200 {
+            let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"
+            log.error(.app, "Groq chat error", details: ["status": httpResponse.statusCode, "error": errorBody])
+            throw GroqError.apiError(httpResponse.statusCode, errorBody)
+        }
+
+        let chatResponse = try JSONDecoder().decode(GroqChatResponse.self, from: data)
+        let content = chatResponse.choices.first?.message.content ?? ""
+
+        log.success(.app, "Chat complete", details: [
+            "duration": String(format: "%.2fs", elapsed),
+            "tokens": chatResponse.usage?.total_tokens ?? 0,
+            "preview": String(content.prefix(60))
+        ])
+
+        return content
+    }
+
     // MARK: - Extract & Transcribe from Video
     
     /// Extracts middle audio segment from video and transcribes it
@@ -174,15 +234,15 @@ actor GroqService {
     /// - Returns: Transcription result
     func transcribeVideoAudio(asset: PHAsset, segmentDuration: TimeInterval = 60) async throws -> TranscriptionResult {
         guard asset.mediaType == .video else {
-            log("❌ Asset is not a video")
+            log.error(.video, "Asset is not a video")
             throw GroqError.notAVideo
         }
 
-        log("🎬 Processing video: \(asset.localIdentifier.prefix(20))...")
+        log.info(.video, "Processing video", details: ["id": String(asset.localIdentifier.prefix(20))])
 
         // Get AVAsset
         guard let avAsset = await getAVAsset(for: asset) else {
-            log("❌ Could not load AVAsset")
+            log.error(.video, "Could not load AVAsset")
             throw GroqError.couldNotLoadVideo
         }
 
@@ -192,9 +252,10 @@ actor GroqService {
         let endTime = min(duration, startTime + segmentDuration)
         let actualDuration = endTime - startTime
 
-        log("🎵 Extracting audio segment")
-        log("   video duration: \(String(format: "%.1f", duration))s")
-        log("   segment: \(String(format: "%.1f", startTime))s → \(String(format: "%.1f", endTime))s (\(String(format: "%.1f", actualDuration))s)")
+        log.info(.video, "Extracting audio segment", details: [
+            "videoDuration": String(format: "%.1fs", duration),
+            "segment": String(format: "%.1fs → %.1fs (%.1fs)", startTime, endTime, actualDuration)
+        ])
 
         // Extract audio to temporary file
         let tempURL = FileManager.default.temporaryDirectory
@@ -214,7 +275,7 @@ actor GroqService {
 
         // Check file size
         let fileSize = try FileManager.default.attributesOfItem(atPath: tempURL.path)[.size] as? Int ?? 0
-        log("   exported: \(fileSize / 1024)KB → \(tempURL.lastPathComponent)")
+        log.debug(.video, "Audio exported", details: ["size": "\(fileSize / 1024)KB", "file": tempURL.lastPathComponent])
 
         // Transcribe
         return try await transcribe(audioURL: tempURL)
@@ -282,6 +343,28 @@ struct WhisperSegment: Codable {
     let start: Double
     let end: Double
     let text: String
+}
+
+// MARK: - Groq Chat Response Models
+
+struct GroqChatResponse: Codable {
+    let choices: [GroqChatChoice]
+    let usage: GroqUsage?
+}
+
+struct GroqChatChoice: Codable {
+    let message: GroqChatMessage
+}
+
+struct GroqChatMessage: Codable {
+    let role: String
+    let content: String
+}
+
+struct GroqUsage: Codable {
+    let prompt_tokens: Int
+    let completion_tokens: Int
+    let total_tokens: Int
 }
 
 // MARK: - Result Models
