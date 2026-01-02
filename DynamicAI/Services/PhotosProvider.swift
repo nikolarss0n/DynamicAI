@@ -1031,41 +1031,10 @@ actor PhotosProvider {
         print("[PhotosProvider] ⚠️ No 'me' photos found via People/Selfies")
         print("[PhotosProvider]    💡 Tip: Open Photos.app → People & Pets → Identify yourself")
         
-        // Last resort: Favorites album
-        print("[PhotosProvider] Fallback: Trying Favorites album...")
-        let favorites = PHAssetCollection.fetchAssetCollections(
-            with: .smartAlbum,
-            subtype: .smartAlbumFavorites,
-            options: nil
-        )
-        
-        if let favoritesAlbum = favorites.firstObject {
-            let fetchOptions = PHFetchOptions()
-            fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-            if let mediaType = mediaType {
-                fetchOptions.predicate = NSPredicate(format: "mediaType == %d", mediaType.rawValue)
-            }
-            
-            let assets = PHAsset.fetchAssets(in: favoritesAlbum, options: fetchOptions)
-            var results: [PHAsset] = []
-            assets.enumerateObjects { asset, _, stop in
-                results.append(asset)
-                if results.count >= limit {
-                    stop.pointee = true
-                }
-            }
-            
-            if !results.isEmpty {
-                print("[PhotosProvider] ✅ Found \(results.count) favorites")
-                return results
-            }
-        }
-        
-        // Final fallback: Recent photos
-        print("[PhotosProvider] Fallback 3: Returning recent photos...")
-        let recent = await fetchPhotos(limit: limit, daysBack: nil, mediaType: mediaType)
-        print("[PhotosProvider] ✅ Found \(recent.count) recent photos")
-        return recent
+        // Don't fallback to Favorites - they're not "photos of me"
+        // Returning empty so search can proceed without "my photos" filter
+        print("[PhotosProvider] ℹ️ Returning empty - set up People recognition for 'my photos' to work")
+        return []
     }
 }
 

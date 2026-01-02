@@ -202,6 +202,7 @@ struct APIKeyInput: View {
 // MARK: - Media Index Tab (Aurora Design)
 
 struct MediaIndexTab: View {
+    // Photo indexing state
     @State private var isIndexing = false
     @State private var indexingType = ""
     @State private var showingRebuildConfirm = false
@@ -210,6 +211,16 @@ struct MediaIndexTab: View {
     @State private var labelIndexedCount = 0
     @State private var statusMessage = ""
     @State private var hasAppeared = false
+
+    // Video test index
+    @State private var testVideoIndex: String = "0"
+
+    // Video indexing state (separate)
+    @State private var isVideoIndexing = false
+    @State private var videoIndexingProgress: Double = 0
+    @State private var videoIndexedCount = 0
+    @State private var videoStatusMessage = ""
+    @State private var showingVideoRebuildConfirm = false
 
     private var totalIndexed: Int {
         geoIndexedCount + labelIndexedCount
@@ -331,7 +342,7 @@ struct MediaIndexTab: View {
                         )
                 )
 
-                // Stats Grid
+                // Stats Grid - Photos
                 HStack(spacing: 14) {
                     AuroraStatCard(
                         icon: "location.fill",
@@ -355,6 +366,17 @@ struct MediaIndexTab: View {
                     .offset(x: hasAppeared ? 0 : 20)
                     .animation(.spring(response: 0.5, dampingFraction: 0.7).delay(0.2), value: hasAppeared)
                 }
+
+                // Video Stats Card
+                AuroraStatCard(
+                    icon: "video.fill",
+                    gradient: LinearGradient(colors: [Color.aurora.success, Color.aurora.cyan], startPoint: .topLeading, endPoint: .bottomTrailing),
+                    title: "Videos",
+                    count: videoIndexedCount,
+                    features: ["Groq Vision", "Whisper"]
+                )
+                .opacity(hasAppeared ? 1 : 0)
+                .animation(.spring(response: 0.5, dampingFraction: 0.7).delay(0.25), value: hasAppeared)
 
                 // Progress Card (when indexing)
                 if isIndexing {
@@ -391,8 +413,14 @@ struct MediaIndexTab: View {
                 Divider()
                     .padding(.vertical, 4)
 
-                // Action Buttons
+                // Photo Index Action Buttons
                 VStack(spacing: 12) {
+                    Text("PHOTO INDEX")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .foregroundStyle(.tertiary)
+                        .tracking(1.5)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
                     // Primary Action Button
                     Button {
                         startIndexing()
@@ -403,14 +431,13 @@ struct MediaIndexTab: View {
                                     .scaleEffect(0.8)
                                     .tint(.white)
                             } else {
-                                Image(systemName: "sparkles")
-                                    .symbolEffect(.bounce, options: .repeating.speed(0.5))
+                                Image(systemName: "photo.stack")
                             }
-                            Text(isIndexing ? "Indexing..." : "Build Indexes")
-                                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            Text(isIndexing ? "Indexing Photos..." : "Build Photo Index")
+                                .font(.system(size: 14, weight: .semibold, design: .rounded))
                         }
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
+                        .padding(.vertical, 12)
                         .background(
                             isIndexing ?
                                 AnyShapeStyle(Color.gray.opacity(0.3)) :
@@ -421,11 +448,11 @@ struct MediaIndexTab: View {
                                 ))
                         )
                         .foregroundStyle(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        .shadow(color: isIndexing ? .clear : Color.aurora.purple.opacity(0.3), radius: 8, y: 4)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .shadow(color: isIndexing ? .clear : Color.aurora.purple.opacity(0.3), radius: 6, y: 3)
                     }
                     .buttonStyle(.plain)
-                    .disabled(isIndexing)
+                    .disabled(isIndexing || isVideoIndexing)
 
                     // Secondary Action
                     Button {
@@ -433,21 +460,152 @@ struct MediaIndexTab: View {
                     } label: {
                         HStack(spacing: 6) {
                             Image(systemName: "arrow.triangle.2.circlepath")
-                            Text("Clear & Rebuild")
+                            Text("Clear & Rebuild Photos")
                         }
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.system(size: 12, weight: .medium))
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
+                        .padding(.vertical, 8)
                         .background(Color.aurora.error.opacity(0.1))
                         .foregroundStyle(Color.aurora.error)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
                         .overlay(
-                            RoundedRectangle(cornerRadius: 10)
+                            RoundedRectangle(cornerRadius: 8)
                                 .strokeBorder(Color.aurora.error.opacity(0.3), lineWidth: 1)
                         )
                     }
                     .buttonStyle(.plain)
-                    .disabled(isIndexing)
+                    .disabled(isIndexing || isVideoIndexing)
+                }
+
+                Divider()
+
+                // Video Index Action Buttons
+                VStack(spacing: 12) {
+                    HStack {
+                        Text("VIDEO INDEX")
+                            .font(.system(size: 10, weight: .bold, design: .rounded))
+                            .foregroundStyle(.tertiary)
+                            .tracking(1.5)
+
+                        Spacer()
+
+                        Text("Uses Groq API")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(.quaternary)
+                            .clipShape(Capsule())
+                    }
+
+                    // Video progress card (when indexing)
+                    if isVideoIndexing {
+                        AuroraIndexingCard(
+                            type: "videos",
+                            progress: videoIndexingProgress,
+                            statusMessage: videoStatusMessage,
+                            onCancel: cancelVideoIndexing
+                        )
+                        .transition(.asymmetric(
+                            insertion: .scale(scale: 0.95).combined(with: .opacity),
+                            removal: .opacity
+                        ))
+                    }
+
+                    // Video Index Button
+                    Button {
+                        startVideoIndexing()
+                    } label: {
+                        HStack(spacing: 10) {
+                            if isVideoIndexing {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                                    .tint(.white)
+                            } else {
+                                Image(systemName: "video.fill")
+                            }
+                            Text(isVideoIndexing ? "Analyzing Videos..." : "Build Video Index")
+                                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(
+                            isVideoIndexing ?
+                                AnyShapeStyle(Color.gray.opacity(0.3)) :
+                                AnyShapeStyle(LinearGradient(
+                                    colors: [Color.aurora.success, Color.aurora.cyan],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                ))
+                        )
+                        .foregroundStyle(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .shadow(color: isVideoIndexing ? .clear : Color.aurora.success.opacity(0.3), radius: 6, y: 3)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isIndexing || isVideoIndexing)
+
+                    // Clear Video Index
+                    Button {
+                        showingVideoRebuildConfirm = true
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                            Text("Clear & Rebuild Videos")
+                        }
+                        .font(.system(size: 12, weight: .medium))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background(Color.aurora.error.opacity(0.1))
+                        .foregroundStyle(Color.aurora.error)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .strokeBorder(Color.aurora.error.opacity(0.3), lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isIndexing || isVideoIndexing)
+
+                    // Test buttons
+                    HStack(spacing: 8) {
+                        TextField("Index", text: $testVideoIndex)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 50)
+                            .font(.system(size: 12, design: .monospaced))
+
+                        Button {
+                            testGroqVision()
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "eye.fill")
+                                Text("Vision")
+                            }
+                            .font(.system(size: 11, weight: .medium))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(Color.aurora.purple.opacity(0.1))
+                            .foregroundStyle(Color.aurora.purple)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain)
+
+                        Button {
+                            testPoseAnalysis()
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "figure.walk")
+                                Text("Pose→LLM")
+                            }
+                            .font(.system(size: 11, weight: .medium))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(Color.aurora.cyan.opacity(0.1))
+                            .foregroundStyle(Color.aurora.cyan)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
 
                 // Storage Info
@@ -472,23 +630,33 @@ struct MediaIndexTab: View {
                 }
             }
         }
-        .alert("Clear All & Rebuild?", isPresented: $showingRebuildConfirm) {
+        .alert("Clear Photo Index & Rebuild?", isPresented: $showingRebuildConfirm) {
             Button("Cancel", role: .cancel) {}
             Button("Clear & Rebuild", role: .destructive) {
                 clearAndRebuild()
             }
         } message: {
-            Text("This will delete all indexed data and re-index your photo library.")
+            Text("This will delete location and label indexes and re-index your photos.")
+        }
+        .alert("Clear Video Index & Rebuild?", isPresented: $showingVideoRebuildConfirm) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear & Rebuild", role: .destructive) {
+                clearAndRebuildVideos()
+            }
+        } message: {
+            Text("This will delete video activity index and re-analyze all videos using Groq Vision + Whisper.")
         }
     }
 
     private func loadIndexStats() async {
         let geoStats = await GeoHashIndex.shared.stats
         let labelStats = await LabelIndex.shared.stats
+        let videoStats = await VideoIndex.shared.stats
 
         await MainActor.run {
             geoIndexedCount = geoStats.photosIndexed
             labelIndexedCount = labelStats.photosIndexed
+            videoIndexedCount = videoStats.videosIndexed
         }
     }
 
@@ -549,6 +717,74 @@ struct MediaIndexTab: View {
         indexingType = ""
         indexingProgress = 0
         statusMessage = "Indexing cancelled"
+    }
+
+    // MARK: - Video Indexing
+
+    private func startVideoIndexing() {
+        isVideoIndexing = true
+        videoIndexingProgress = 0
+        Task {
+            videoStatusMessage = "Analyzing videos with Groq Vision..."
+
+            let stats = await VideoIndex.shared.buildIndex(limit: nil) { current, total, description in
+                Task { @MainActor in
+                    videoIndexingProgress = Double(current) / Double(max(total, 1))
+                    videoStatusMessage = "[\(current)/\(total)] \(description)"
+                }
+            }
+
+            await MainActor.run {
+                videoIndexedCount = stats.indexed
+                isVideoIndexing = false
+                videoIndexingProgress = 0
+                videoStatusMessage = stats.summary
+            }
+        }
+    }
+
+    private func clearAndRebuildVideos() {
+        Task {
+            await VideoIndex.shared.clear()
+
+            await MainActor.run {
+                videoIndexedCount = 0
+                startVideoIndexing()
+            }
+        }
+    }
+
+    private func testGroqVision() {
+        let index = Int(testVideoIndex) ?? 0
+        Task {
+            videoStatusMessage = "Testing Groq Vision on video #\(index)..."
+            let result = await VideoIndex.shared.testGroqVision(videoIndex: index)
+            await MainActor.run {
+                videoStatusMessage = "Vision: \(result)"
+            }
+        }
+    }
+
+    private func testPoseAnalysis() {
+        let index = Int(testVideoIndex) ?? 0
+        Task {
+            videoStatusMessage = "Extracting poses from video #\(index)..."
+            let result = await VideoIndex.shared.testPoseAnalysis(videoIndex: index)
+            await MainActor.run {
+                videoStatusMessage = result
+            }
+        }
+    }
+
+    private func cancelVideoIndexing() {
+        Task {
+            await VideoIndex.shared.cancelIndexing()
+            await MainActor.run {
+                isVideoIndexing = false
+                videoIndexingProgress = 0
+                videoStatusMessage = "Indexing cancelled"
+            }
+        }
     }
 }
 

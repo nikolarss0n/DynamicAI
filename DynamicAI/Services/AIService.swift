@@ -271,8 +271,26 @@ class AIService: ObservableObject {
 
     private func isPhotoSearchQuery(_ message: String) -> Bool {
         let lowered = message.lowercased()
-        let photoKeywords = ["photo", "photos", "picture", "pictures", "image", "images", "video", "videos", "miraggio", "from my library", "show me", "find my"]
-        return photoKeywords.contains { lowered.contains($0) }
+        
+        // Direct media keywords
+        let mediaKeywords = ["photo", "photos", "picture", "pictures", "image", "images", "video", "videos", "clip", "clips", "recording", "recordings"]
+        if mediaKeywords.contains(where: { lowered.contains($0) }) {
+            return true
+        }
+        
+        // Action + context patterns (show/find + activity/place)
+        let actionKeywords = ["show me", "find my", "find me", "search for", "look for", "where i", "where we", "when i", "when we", "from my library"]
+        if actionKeywords.contains(where: { lowered.contains($0) }) {
+            return true
+        }
+        
+        // Known places/activities that imply media search
+        let contextKeywords = ["miraggio", "vacation", "trip to", "holiday"]
+        if contextKeywords.contains(where: { lowered.contains($0) }) {
+            return true
+        }
+        
+        return false
     }
 
     private func handlePhotoSearch(query: String) async -> AIResponse {

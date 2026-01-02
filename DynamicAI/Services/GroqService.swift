@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import Photos
+import AppKit
 
 // MARK: - Groq Service (Whisper Transcription + Llama Chat)
 
@@ -225,6 +226,198 @@ actor GroqService {
         return content
     }
 
+    
+    // MARK: - Vision Analysis (Llama Vision)
+    
+    private let visionModel = "meta-llama/llama-4-scout-17b-16e-instruct"
+    
+    /// Analyze images with Llama Vision model
+    /// - Parameters:
+    ///   - images: Array of images to analyze (will be resized if too large)
+    ///   - prompt: The question/prompt about the images
+    ///   - audioContext: Optional transcribed audio for additional context
+    /// - Returns: The model's description/analysis
+    func analyzeVideo(frames: [NSImage], prompt: String, audioContext: String? = nil) async throws -> String {
+        guard let apiKey = apiKey else {
+            throw GroqError.noAPIKey
+        }
+        
+        log.section("Groq Vision Analysis")
+        log.info(.app, "Vision request", details: [
+            "frames": frames.count,
+            "hasAudio": audioContext != nil
+        ])
+        
+        // Create contact sheet (single image with all frames side-by-side)
+        guard let contactSheet = createContactSheet(from: frames, frameSize: 512),
+              let base64 = imageToBase64(contactSheet, maxSize: 1536) else {
+            throw GroqError.invalidInput("Failed to create contact sheet")
+        }
+        
+        log.info(.app, "Contact sheet created", details: [
+            "frames": frames.count,
+            "size": base64.count
+        ])
+        
+        var imageContents: [[String: Any]] = [
+            [
+                "type": "image_url",
+                "image_url": [
+                    "url": "data:image/jpeg;base64,\(base64)"
+                ]
+            ]
+        ]
+        
+        // Build the prompt with audio context
+        var fullPrompt = prompt
+        if let audio = audioContext, !audio.isEmpty {
+            fullPrompt = """
+            \(prompt)
+            
+            Audio from video (transcribed): "\(audio)"
+            """
+        }
+        
+        // Add text prompt to content
+        imageContents.append([
+            "type": "text",
+            "text": fullPrompt
+        ])
+        
+        let messages: [[String: Any]] = [
+            [
+                "role": "user",
+                "content": imageContents
+            ]
+        ]
+        
+        let requestBody: [String: Any] = [
+            "model": visionModel,
+            "messages": messages,
+            "temperature": 0.3,
+            "max_tokens": 1024
+        ]
+        
+        var request = URLRequest(url: URL(string: chatEndpoint)!)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
+        request.timeoutInterval = 60  // Vision takes longer
+        
+        let startTime = Date()
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let elapsed = Date().timeIntervalSince(startTime)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw GroqError.invalidResponse
+        }
+        
+        if httpResponse.statusCode != 200 {
+            let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"
+            log.error(.app, "Vision error", details: ["status": httpResponse.statusCode, "error": String(errorBody.prefix(200))])
+            throw GroqError.apiError(httpResponse.statusCode, errorBody)
+        }
+        
+        let chatResponse = try JSONDecoder().decode(GroqChatResponse.self, from: data)
+        let content = chatResponse.choices.first?.message.content ?? ""
+        
+        log.success(.app, "Vision complete", details: [
+            "duration": String(format: "%.2fs", elapsed),
+            "tokens": chatResponse.usage?.total_tokens ?? 0,
+            "preview": String(content.prefix(80))
+        ])
+        
+        return content
+    }
+
+    /// Test vision on a single image - for debugging
+    /// Call this to test what Groq Vision sees in an image
+    func testVision(image: NSImage) async -> String {
+        let prompt = """
+        Describe the main activity happening in this image in 1-2 sentences.
+        Focus on: What actions are being performed? What is the person doing?
+        Be specific about the activity, not just the scene.
+        """
+
+        do {
+            let result = try await analyzeVideo(frames: [image], prompt: prompt, audioContext: nil)
+            log.info(.app, "🧪 Vision test result", details: ["result": result])
+            return result
+        } catch {
+            log.error(.app, "🧪 Vision test failed", details: ["error": error.localizedDescription])
+            return "Error: \(error.localizedDescription)"
+        }
+    }
+
+    /// Convert NSImage to base64 JPEG, resizing if needed
+    /// Create a contact sheet by stitching frames horizontally
+    /// Shows temporal sequence: left = early, right = late
+    private func createContactSheet(from frames: [NSImage], frameSize: Int = 512) -> NSImage? {
+        guard !frames.isEmpty else { return nil }
+        
+        let frameWidth = CGFloat(frameSize)
+        let frameHeight = CGFloat(frameSize)
+        let totalWidth = frameWidth * CGFloat(frames.count)
+        
+        let contactSheet = NSImage(size: NSSize(width: totalWidth, height: frameHeight))
+        contactSheet.lockFocus()
+        
+        // Fill with dark background (helps model see frame boundaries)
+        NSColor.darkGray.setFill()
+        NSRect(origin: .zero, size: contactSheet.size).fill()
+        
+        for (index, frame) in frames.enumerated() {
+            let x = CGFloat(index) * frameWidth
+            let destRect = NSRect(x: x, y: 0, width: frameWidth, height: frameHeight)
+            
+            // Draw frame, maintaining aspect ratio
+            let sourceSize = frame.size
+            let scale = min(frameWidth / sourceSize.width, frameHeight / sourceSize.height)
+            let scaledWidth = sourceSize.width * scale
+            let scaledHeight = sourceSize.height * scale
+            let offsetX = x + (frameWidth - scaledWidth) / 2
+            let offsetY = (frameHeight - scaledHeight) / 2
+            
+            frame.draw(in: NSRect(x: offsetX, y: offsetY, width: scaledWidth, height: scaledHeight),
+                       from: NSRect(origin: .zero, size: sourceSize),
+                       operation: .copy,
+                       fraction: 1.0)
+        }
+        
+        contactSheet.unlockFocus()
+        return contactSheet
+    }
+    
+    private func imageToBase64(_ image: NSImage, maxSize: Int) -> String? {
+        // Resize if needed
+        let size = image.size
+        var targetSize = size
+        
+        if size.width > CGFloat(maxSize) || size.height > CGFloat(maxSize) {
+            let scale = min(CGFloat(maxSize) / size.width, CGFloat(maxSize) / size.height)
+            targetSize = NSSize(width: size.width * scale, height: size.height * scale)
+        }
+        
+        // Create resized image
+        let resizedImage = NSImage(size: targetSize)
+        resizedImage.lockFocus()
+        image.draw(in: NSRect(origin: .zero, size: targetSize),
+                   from: NSRect(origin: .zero, size: size),
+                   operation: .copy,
+                   fraction: 1.0)
+        resizedImage.unlockFocus()
+        
+        // Convert to JPEG data
+        guard let tiffData = resizedImage.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData),
+              let jpegData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
+            return nil
+        }
+        
+        return jpegData.base64EncodedString()
+    }
+
     // MARK: - Extract & Transcribe from Video
     
     /// Extracts middle audio segment from video and transcribes it
@@ -396,6 +589,7 @@ enum GroqError: LocalizedError {
     case exportFailed(String)
     case invalidResponse
     case apiError(Int, String)
+    case invalidInput(String)
     
     var errorDescription: String? {
         switch self {
@@ -413,6 +607,8 @@ enum GroqError: LocalizedError {
             return "Invalid API response"
         case .apiError(let code, let msg):
             return "Groq API error \(code): \(msg)"
+        case .invalidInput(let reason):
+            return "Invalid input: \(reason)"
         }
     }
 }

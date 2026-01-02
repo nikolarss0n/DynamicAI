@@ -17,21 +17,23 @@ import AppKit
 actor SmartPhotoSearch {
     
     // MARK: - Dependencies
-    
+
     private let queryParser = SmartQueryParser()
     private let geoIndex: GeoHashIndex
     private let labelIndex: LabelIndex
+    private let videoIndex: VideoIndex
     private let photosProvider: PhotosProvider
-    
+
     // MARK: - Singleton
-    
+
     static let shared = SmartPhotoSearch()
-    
+
     // MARK: - Initialization
-    
+
     init() {
         self.geoIndex = GeoHashIndex.shared
         self.labelIndex = LabelIndex.shared
+        self.videoIndex = VideoIndex.shared
         self.photosProvider = PhotosProvider()
     }
     
@@ -86,8 +88,10 @@ actor SmartPhotoSearch {
         
         // 3. Label filter via Vision index
         // Skip if location already found good results (labels are often inferred, not explicit)
+        // Skip for video searches - LLM video search handles semantic matching directly
         let locationFoundResults = candidateIds != nil && !candidateIds!.isEmpty
-        if parsed.hasLabels, let labels = parsed.labels, !locationFoundResults {
+        let isVideoSearch = parsed.mediaType == "video"
+        if parsed.hasLabels, let labels = parsed.labels, !locationFoundResults, !isVideoSearch {
             hasRequestedContentFilter = true  // User wanted label-based search
             
             // Expand high-level concepts (outdoor, travel) to actual Vision labels
@@ -117,7 +121,8 @@ actor SmartPhotoSearch {
         }
         
         // 5. People filter using Photos.app face recognition
-        if parsed.hasPeople, let people = parsed.people {
+        // Skip for video searches - LLM video search handles semantic matching directly
+        if parsed.hasPeople, let people = parsed.people, !isVideoSearch {
             let peopleFiltered = await filterByPeople(candidates: candidateIds, names: people)
             candidateIds = peopleFiltered
             appliedFilters.append("people: \(people.joined(separator: ", ")) (\(peopleFiltered.count) matches)")
@@ -130,9 +135,20 @@ actor SmartPhotoSearch {
         if parsed.isMyPhotos {
             let hasCandidates = candidateIds != nil && !candidateIds!.isEmpty
             if hasCandidates || !hasRequestedContentFilter {
-                let myPhotoIds = await filterMyPhotos(candidates: candidateIds)
-                candidateIds = myPhotoIds
-                appliedFilters.append("my photos (\(myPhotoIds.count) matches)")
+                // Pass media type so we filter to videos if searching for videos
+                let requestedType: PHAssetMediaType? = parsed.mediaType == "video" ? .video : 
+                                                        parsed.mediaType == "photo" ? .image : nil
+                let (filtered, wasApplied) = await filterMyPhotos(candidates: candidateIds, mediaType: requestedType)
+                
+                if wasApplied {
+                    // Filter was applied - update candidates
+                    print("[SmartPhotoSearch] 'My photos' filter: \(filtered?.count ?? 0) matches (mediaType: \(requestedType == .video ? "video" : requestedType == .image ? "image" : "all"))")
+                    candidateIds = filtered
+                    appliedFilters.append("my photos (\(filtered?.count ?? 0) matches)")
+                } else {
+                    // People recognition not set up - candidateIds unchanged, let other filters work
+                    appliedFilters.append("my photos (skipped - set up People recognition in Photos.app)")
+                }
             } else {
                 // Content filter was requested but found no results - don't fall back to all selfies
                 appliedFilters.append("my photos (skipped - content filters found no matches)")
@@ -141,15 +157,40 @@ actor SmartPhotoSearch {
         
         // 7. Media type filter
         if parsed.mediaType != "all" {
+            print("[SmartPhotoSearch] Before media type filter: candidateIds is \(candidateIds == nil ? "nil" : "Set(\(candidateIds!.count))")")
+            let beforeCount = candidateIds?.count ?? 0
             let typeFiltered = filterByMediaType(
                 candidates: candidateIds,
                 type: parsed.mediaType == "video" ? .video : .image
             )
             candidateIds = typeFiltered
+            print("[SmartPhotoSearch] Media type filter: \(beforeCount) → \(typeFiltered.count) \(parsed.mediaType)s")
             appliedFilters.append("type: \(parsed.mediaType)")
         }
-        
-        // 8. Apply limit
+
+        // 8. Video search - LLM-first approach
+        // Skip complex query parsing, just send raw query + video descriptions to LLM
+        // LLM picks matching videos semantically
+        if parsed.mediaType == "video" {
+            // Use raw user query for semantic video search
+            let videoIds = await videoIndex.searchWithLLM(query: query)
+            print("[SmartPhotoSearch] LLM video search for '\(query)' found \(videoIds.count) videos")
+
+            if !videoIds.isEmpty {
+                let beforeCount = candidateIds?.count ?? 0
+                if candidateIds == nil {
+                    candidateIds = Set(videoIds)
+                } else {
+                    // Intersect with any prior filters (time, my photos, etc.)
+                    candidateIds = candidateIds?.intersection(Set(videoIds))
+                }
+                print("[SmartPhotoSearch] Video filter: \(beforeCount) → \(candidateIds?.count ?? 0) videos")
+                appliedFilters.append("video search: '\(query)' (\(videoIds.count) matches)")
+            }
+        }
+
+        // 9. Apply limit
+        print("[SmartPhotoSearch] Final candidates: \(candidateIds?.count ?? 0)")
         var finalIds = Array(candidateIds ?? [])
         if let limit = parsed.limit, finalIds.count > limit {
             finalIds = Array(finalIds.prefix(limit))
@@ -249,14 +290,22 @@ actor SmartPhotoSearch {
     }
     
     /// Filter for "my photos" - photos where main person appears
-    private func filterMyPhotos(candidates: Set<String>?) async -> Set<String> {
-        let myPhotos = await photosProvider.fetchMyPhotos(limit: 10000, mediaType: nil)
+    /// Returns (filteredIds, wasApplied) - wasApplied is false if People recognition isn't set up
+    private func filterMyPhotos(candidates: Set<String>?, mediaType: PHAssetMediaType? = nil) async -> (Set<String>?, Bool) {
+        let myPhotos = await photosProvider.fetchMyPhotos(limit: 10000, mediaType: mediaType)
+        
+        // If fetchMyPhotos returns empty, People recognition isn't set up
+        guard !myPhotos.isEmpty else {
+            print("[SmartPhotoSearch] ⚠️ 'My photos' filter skipped - no photos with face recognition")
+            return (candidates, false)  // Pass through unchanged, filter NOT applied
+        }
+        
         let myPhotoIds = Set(myPhotos.map { $0.localIdentifier })
         
         if let candidates = candidates {
-            return candidates.intersection(myPhotoIds)
+            return (candidates.intersection(myPhotoIds), true)
         }
-        return myPhotoIds
+        return (myPhotoIds, true)
     }
     
     /// Filter by media type
@@ -265,8 +314,10 @@ actor SmartPhotoSearch {
         // If candidates is empty, a previous filter found nothing - return empty
         guard let candidateIds = candidates else {
             // No previous filter - get all of this type
+            print("[SmartPhotoSearch] filterByMediaType: candidates is nil, fetching all \(type == .video ? "videos" : "photos")")
             let options = PHFetchOptions()
             let result = PHAsset.fetchAssets(with: type, options: options)
+            print("[SmartPhotoSearch] filterByMediaType: PHAsset.fetchAssets returned \(result.count) assets")
             var filtered = Set<String>()
             result.enumerateObjects { asset, _, _ in
                 filtered.insert(asset.localIdentifier)
@@ -274,8 +325,11 @@ actor SmartPhotoSearch {
             return filtered
         }
         
+        print("[SmartPhotoSearch] filterByMediaType: candidates is \(candidateIds.count) items")
+        
         // Previous filter was applied - if empty, stay empty
         guard !candidateIds.isEmpty else {
+            print("[SmartPhotoSearch] filterByMediaType: returning empty (previous filter found nothing)")
             return []
         }
         
@@ -368,29 +422,38 @@ actor SmartPhotoSearch {
     }
     
     // MARK: - Index Management
-    
-    /// Build both indexes
+
+    /// Build all indexes (geo, labels, video)
     func buildIndexes(onProgress: @escaping (String, Int, Int) -> Void) async -> (geo: IndexStats, labels: LabelIndexStats) {
         // Build geohash index first (fast, ~3 seconds)
         onProgress("Building location index...", 0, 100)
         let geoStats = await geoIndex.buildIndex { current, total in
             onProgress("Indexing locations", current, total)
         }
-        
+
         // Build label index (slower, background)
         onProgress("Building label index...", 0, 100)
         let labelStats = await labelIndex.buildIndex { current, total, label in
             onProgress("Classifying: \(label)", current, total)
         }
-        
+
         return (geoStats, labelStats)
     }
-    
+
+    /// Build video activity index separately (expensive - uses LLM)
+    func buildVideoIndex(
+        limit: Int? = nil,
+        onProgress: @escaping (Int, Int, String) -> Void
+    ) async -> VideoIndexStats {
+        return await videoIndex.buildIndex(limit: limit, onProgress: onProgress)
+    }
+
     /// Get index statistics
     func getStats() async -> SearchStats {
         let geoStats = await geoIndex.stats
         let labelStats = await labelIndex.stats
-        
+        let videoStats = await videoIndex.stats
+
         return SearchStats(
             geoIndex: SearchStats.IndexInfo(
                 photosIndexed: geoStats.photosIndexed,
@@ -401,14 +464,20 @@ actor SmartPhotoSearch {
                 photosIndexed: labelStats.photosIndexed,
                 uniqueKeys: labelStats.uniqueLabels,
                 isLoaded: labelStats.isLoaded
+            ),
+            videoIndex: SearchStats.IndexInfo(
+                photosIndexed: videoStats.videosIndexed,
+                uniqueKeys: videoStats.uniqueActivities + videoStats.uniqueLabels,
+                isLoaded: videoStats.isLoaded
             )
         )
     }
-    
+
     /// Load indexes from disk
     func loadIndexes() async {
         await geoIndex.loadFromDisk()
         await labelIndex.loadFromDisk()
+        await videoIndex.loadFromDisk()
     }
 }
 
@@ -447,17 +516,28 @@ struct SearchStats {
         let uniqueKeys: Int
         let isLoaded: Bool
     }
-    
+
     let geoIndex: IndexInfo
     let labelIndex: IndexInfo
-    
-    var summary: String {
-        """
-        GeoHash: \(geoIndex.photosIndexed) photos, \(geoIndex.uniqueKeys) locations
-        Labels: \(labelIndex.photosIndexed) photos, \(labelIndex.uniqueKeys) labels
-        """
+    let videoIndex: IndexInfo?
+
+    init(geoIndex: IndexInfo, labelIndex: IndexInfo, videoIndex: IndexInfo? = nil) {
+        self.geoIndex = geoIndex
+        self.labelIndex = labelIndex
+        self.videoIndex = videoIndex
     }
-    
+
+    var summary: String {
+        var lines = [
+            "GeoHash: \(geoIndex.photosIndexed) photos, \(geoIndex.uniqueKeys) locations",
+            "Labels: \(labelIndex.photosIndexed) photos, \(labelIndex.uniqueKeys) labels"
+        ]
+        if let video = videoIndex, video.isLoaded {
+            lines.append("Videos: \(video.photosIndexed) indexed, \(video.uniqueKeys) activities")
+        }
+        return lines.joined(separator: "\n")
+    }
+
     var isReady: Bool {
         geoIndex.isLoaded || labelIndex.isLoaded
     }
@@ -487,13 +567,13 @@ extension SmartPhotoSearch {
             parsedQuery: ParsedPhotoQuery(
                 location: place, locationHint: nil, timePeriod: nil,
                 labels: nil, people: nil, isMyPhotos: false,
-                mediaType: "all", limit: nil, searchTerms: place
+                mediaType: "all", activity: nil, limit: nil, searchTerms: place
             ),
             appliedFilters: ["location: \(place)"],
             searchTimeMs: 0
         ))
     }
-    
+
     /// Search by label only (no LLM, direct label index)
     func searchByLabel(_ label: String) async -> [PHAsset] {
         let ids = await labelIndex.search(label: label)
@@ -503,9 +583,25 @@ extension SmartPhotoSearch {
             parsedQuery: ParsedPhotoQuery(
                 location: nil, locationHint: nil, timePeriod: nil,
                 labels: [label], people: nil, isMyPhotos: false,
-                mediaType: "all", limit: nil, searchTerms: label
+                mediaType: "all", activity: nil, limit: nil, searchTerms: label
             ),
             appliedFilters: ["label: \(label)"],
+            searchTimeMs: 0
+        ))
+    }
+
+    /// Search videos by activity (no LLM, direct video index)
+    func searchByActivity(_ activity: String) async -> [PHAsset] {
+        let ids = await videoIndex.search(activity: activity)
+        return fetchAssets(from: PhotoSearchResponse(
+            assetIds: ids,
+            query: activity,
+            parsedQuery: ParsedPhotoQuery(
+                location: nil, locationHint: nil, timePeriod: nil,
+                labels: nil, people: nil, isMyPhotos: false,
+                mediaType: "video", activity: activity, limit: nil, searchTerms: activity
+            ),
+            appliedFilters: ["activity: \(activity)"],
             searchTimeMs: 0
         ))
     }
